@@ -10,14 +10,24 @@ const callRoutes = require("./routes/callRoutes");
 const app = express();
 
 // =====================
-// MIDDLEWARE
+// FIXED CORS
 // =====================
-app.use(cors());
-app.use(express.json());
+app.use(
+  cors({
+    origin: "*", // Allow all origins (Netlify, Render, localhost)
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+// =====================
+// BODY PARSERS
+// =====================
+app.use(express.json({ limit: "10mb" }));
 app.use(bodyParser.json());
 
 // =====================
-// CONNECT TO MONGO
+// CONNECT TO DATABASE
 // =====================
 connectDB();
 
@@ -27,7 +37,7 @@ connectDB();
 app.use("/", webhookRoutes);
 app.use("/calls", callRoutes);
 
-// TEST ROUTE
+// HEALTH CHECK
 app.get("/", (req, res) => {
   res.send("AI Receptionist Backend is running...");
 });
