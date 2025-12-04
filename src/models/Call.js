@@ -2,10 +2,12 @@ const mongoose = require("mongoose");
 
 const CallSchema = new mongoose.Schema(
   {
-    call_id: String,
-    agent_name: String,
-    call_type: String,
-    call_status: String
+    from: { type: String, required: true },
+    to: { type: String, required: true },
+    timestamp: { type: Date, required: true },
+    duration: { type: Number },
+    transcript: { type: String },
+    outcome: { type: String }
   },
   { timestamps: true }
 );
