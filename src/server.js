@@ -14,12 +14,15 @@ const app = express();
 // =====================
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN || "*",
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type"],
+    origin: [
+      "http://localhost:5173",
+      "https://ai-receptionist-frontend-xi.vercel.app",
+      "https://ai-receptionist-frontend-2cyj0sg9.vercel.app"
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-
 // =====================
 // BODY PARSERS
 // =====================
