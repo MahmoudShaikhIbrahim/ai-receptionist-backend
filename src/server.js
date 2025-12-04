@@ -10,13 +10,13 @@ const callRoutes = require("./routes/callRoutes");
 const app = express();
 
 // =====================
-// FIXED CORS
+// CORS FIX FOR RAILWAY + VERCEL
 // =====================
 app.use(
   cors({
-    origin: "*", // Allow all origins (Netlify, Render, localhost)
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    origin: process.env.CORS_ORIGIN || "*",
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type"],
   })
 );
 
