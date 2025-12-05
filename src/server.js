@@ -5,7 +5,9 @@ const bodyParser = require("body-parser");
 
 const connectDB = require("./config/db");
 const webhookRoutes = require("./routes/webhookRoutes");
+const agentRoutes = require("./routes/agentRoutes");
 const callRoutes = require("./routes/callRoutes");
+const authRoutes = require("./routes/authRoutes");
 
 const app = express();
 
@@ -38,6 +40,9 @@ connectDB();
 // =====================
 app.use("/", webhookRoutes);
 app.use("/calls", callRoutes);
+app.use("/agents", agentRoutes);
+app.use("/auth", authRoutes);
+
 
 // HEALTH CHECK
 app.get("/", (req, res) => {
