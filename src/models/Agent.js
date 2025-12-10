@@ -1,25 +1,42 @@
 // src/models/Agent.js
-
 const mongoose = require("mongoose");
 
 const AgentSchema = new mongoose.Schema(
   {
+    // Link agent to its owner business (mandatory)
+    businessId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Business",
+      required: true,
+      index: true,
+    },
+
+    // Public identity of the AI agent
     name: { type: String, required: true, trim: true },
-    businessName: { type: String, required: true, trim: true },
 
-    ownerEmail: { type: String },
-    businessPhoneNumber: { type: String },
+    // Classification of how it behaves
+    businessType: {
+      type: String,
+      enum: ["restaurant", "clinic", "cafe", "salon", "hospital", "hotel"],
+      required: true,
+    },
 
-    industry: { type: String },
-    timezone: { type: String },
-    language: { type: String },
-
+    // Retell integration
     retellAgentId: { type: String },
+
+    // Core AI config
     systemPrompt: { type: String, required: true },
     greetingMessage: { type: String },
     fallbackMessage: { type: String },
     closingMessage: { type: String },
-    openingHours: { type: Object }
+
+    // Behavior / settings
+    openingHours: { type: Object },
+    languagePreference: {
+      type: String,
+      enum: ["ar", "en"],
+      default: "ar", // Arabic first by default
+    },
   },
   { timestamps: true }
 );
