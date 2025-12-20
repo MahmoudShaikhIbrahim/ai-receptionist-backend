@@ -1,26 +1,38 @@
-// src/models/Call.js
-
 const mongoose = require("mongoose");
 
 const CallSchema = new mongoose.Schema(
   {
-    // Which agent handled this call
-    agent: {
+    // External identifiers (source of truth)
+    call_id: { type: String, required: true, index: true },
+    provider: { type: String, default: "retell" },
+
+    // Retell agent info (string-based)
+    agent_id: { type: String },      // retell agent id
+    agent_name: { type: String },
+
+    // Call data
+    from: String,
+    to: String,
+    call_type: String,
+    outcome: String,
+    duration: Number,
+    transcript: String,
+    timestamp: Date,
+
+    // Internal linking (optional, async)
+    agentRef: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Agent",
-      required: false, // keep optional for old data
+      default: null,
+    },
+    businessRef: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Business",
+      default: null,
     },
 
-    from: { type: String, required: true }, // caller
-    to: { type: String, required: true },   // number they called
-
-    timestamp: { type: Date, required: true },
-
-    duration: { type: Number }, // in seconds (optional)
-    transcript: { type: String },
-    outcome: { type: String }, // e.g., "completed", "missed", "voicemail"
-
-    // Later we can add: tags, sentiment, recordingUrl, etc.
+    // Full raw payload (critical for future-proofing)
+    raw: { type: Object, required: true },
   },
   { timestamps: true }
 );

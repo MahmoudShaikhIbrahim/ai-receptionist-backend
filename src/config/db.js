@@ -8,9 +8,11 @@ async function connectDB() {
       throw new Error("❌ MONGO_URI is missing from environment variables!");
     }
 
-    await mongoose.connect(uri);
+    await mongoose.connect(uri, {
+      dbName: "ai-receptionist-db", // 🔒 FORCE correct database
+    });
 
-    console.log("✅ MongoDB connected successfully");
+    console.log("✅ MongoDB connected to ai-receptionist-db");
   } catch (error) {
     console.error("❌ MongoDB Connection Error:", error.message);
     process.exit(1);

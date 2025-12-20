@@ -1,50 +1,56 @@
-// src/models/Business.js
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
 
 const BusinessSchema = new mongoose.Schema(
   {
-    businessName: { type: String, required: true, trim: true },
+    /* ======================
+       CORE IDENTITY
+    ====================== */
+    businessName: {
+      type: String,
+      required: true,
+    },
 
+    // Owner / account email
     email: {
       type: String,
       required: true,
       unique: true,
-      lowercase: true,
-      trim: true,
     },
 
-    passwordHash: {
+    password: {
       type: String,
       required: true,
     },
 
-    businessType: {
-      type: String,
-      enum: ["restaurant", "clinic", "cafe", "salon", "hospital", "hotel"],
-      required: true,
+    /* ======================
+       CONTACT INFORMATION
+    ====================== */
+    ownerPhoneNumber: {
+      type: String, // decision-maker contact
     },
 
-    ownerName: { type: String, trim: true },
-    businessPhone: { type: String, trim: true },
-
-    timezone: {
-      type: String,
-      default: "Asia/Dubai",
-    },
-
-    languagePreference: {
-      type: String,
-      enum: ["ar", "en"],
-      default: "ar", // Arabic-first by default
-    },
-
-    // One business = one main AI agent (for now)
-    agentId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Agent",
+    businessPhoneNumber: {
+      type: String, // public-facing business number
     },
   },
   { timestamps: true }
 );
+
+/* ======================
+   PASSWORD HASHING
+====================== */
+BusinessSchema.pre("save", async function (next) {
+  if (!this.isModified("password")) return next();
+  this.password = await bcrypt.hash(this.password, 10);
+  next();
+});
+
+/* ======================
+   PASSWORD CHECK
+====================== */
+BusinessSchema.methods.comparePassword = async function (candidate) {
+  return bcrypt.compare(candidate, this.password);
+};
 
 module.exports = mongoose.model("Business", BusinessSchema);

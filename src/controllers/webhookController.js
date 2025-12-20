@@ -1,36 +1,43 @@
+// src/controllers/webhookController.js
 const Call = require("../models/Call");
 
 exports.handleWebhook = async (req, res) => {
   try {
-    console.log("🔥 Retell Webhook Event Received:");
-    console.log(JSON.stringify(req.body, null, 2));
+    const payload = req.body;
 
-    const event = req.body;
-
-    // Only handle events that contain call information
-    if (!event || !event.call_id) {
-      console.log("❌ No valid call data in webhook.");
+    // Retell sends many event types – only persist finalized calls
+    if (payload.event !== "call_analyzed" || !payload.call) {
       return res.status(200).json({ ignored: true });
     }
 
-    // Normalize fields coming from Retell
-    const callData = {
-      call_id: event.call_id,
-      agent_name: event.agent_name || "Unknown",
-      call_type: event.call_type || "incoming",
-      call_status: event.outcome || event.status || "unknown",
-      createdAt: event.timestamp || new Date(),
+    const call = payload.call;
+
+    const callDoc = {
+      call_id: call.call_id,
+      provider: "retell",
+      from: call.from || null,
+      to: call.to || null,
+      outcome: call.call_status || "unknown",
+      transcript: call.transcript || "",
+      timestamp: call.end_timestamp
+        ? new Date(call.end_timestamp)
+        : new Date(),
+
+      // IMPORTANT: keep these nullable until real business mapping exists
+      agentRef: null,
+      businessRef: null,
+
+      // Always store raw payload for audits & future features
+      raw: payload,
     };
 
-    // Save to MongoDB
-    await Call.create(callData);
+    await Call.create(callDoc);
 
-    console.log("✅ Call saved to database:", callData);
+    console.log("✅ Call saved:", call.call_id);
 
-    // Reply fast so Retell doesn't resend
     return res.status(200).json({ received: true });
-  } catch (error) {
-    console.error("❌ ERROR handling webhook:", error);
-    return res.status(500).json({ error: "Webhook processing failed" });
+  } catch (err) {
+    console.error("❌ Webhook failed:", err);
+    return res.status(500).json({ error: "Webhook failed" });
   }
 };

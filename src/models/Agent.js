@@ -1,41 +1,77 @@
 // src/models/Agent.js
 const mongoose = require("mongoose");
 
+const OpeningHoursSchema = new mongoose.Schema(
+  {
+    day: String,
+    open: String,
+    close: String,
+    closed: Boolean,
+  },
+  { _id: false }
+);
+
 const AgentSchema = new mongoose.Schema(
   {
-    // Link agent to its owner business (mandatory)
+    /* ======================
+       OWNERSHIP
+    ====================== */
     businessId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",
       required: true,
-      index: true,
     },
 
-    // Public identity of the AI agent
-    name: { type: String, required: true, trim: true },
+    businessName: { type: String, required: true },
+    ownerEmail: { type: String, required: true },
+    businessPhoneNumber: { type: String },
 
-    // Classification of how it behaves
     businessType: {
       type: String,
-      enum: ["restaurant", "clinic", "cafe", "salon", "hospital", "hotel"],
-      required: true,
+      default: "restaurant", // restaurant / cafe / clinic / etc.
     },
 
-    // Retell integration
-    retellAgentId: { type: String },
-
-    // Core AI config
-    systemPrompt: { type: String, required: true },
-    greetingMessage: { type: String },
-    fallbackMessage: { type: String },
-    closingMessage: { type: String },
-
-    // Behavior / settings
-    openingHours: { type: Object },
-    languagePreference: {
+    /* ======================
+       RETELL (ADMIN ONLY)
+       Immutable mapping
+    ====================== */
+    retellAgentId: {
       type: String,
-      enum: ["ar", "en"],
-      default: "ar", // Arabic first by default
+      immutable: true, // 🔒 never editable by business
+    },
+
+    retellAgentName: {
+      type: String, // optional helper for admin search
+    },
+
+    /* ======================
+       BUSINESS REQUEST
+       (Free text, any language)
+    ====================== */
+    changeRequestText: {
+      type: String,
+    },
+
+    changeRequestStatus: {
+      type: String,
+      enum: ["none", "pending", "applied"],
+      default: "none",
+    },
+
+    changeRequestUpdatedAt: {
+      type: Date,
+    },
+
+    changeRequestAppliedAt: {
+      type: Date,
+    },
+
+    /* ======================
+       BUSINESS LOGIC
+    ====================== */
+    openingHours: {
+      type: Object,
+      default: {},
     },
   },
   { timestamps: true }

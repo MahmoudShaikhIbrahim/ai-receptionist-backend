@@ -1,5 +1,4 @@
 // src/server.js
-
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -12,27 +11,35 @@ const agentRoutes = require("./routes/agentRoutes");
 const callRoutes = require("./routes/callRoutes");
 const authRoutes = require("./routes/authRoutes");
 const businessRoutes = require("./routes/businessRoutes");
+const agentMeRoutes = require("./routes/agentMeRoutes");
 
 const app = express();
 const server = http.createServer(app);
 
-// Socket.io will be added here later for real-time
-// const { setupWebSocket } = require("./services/websocket");
-// setupWebSocket(server);
+// =====================
+// CORS (FIXED)
+// =====================
+const ALLOWED_ORIGINS = [
+  "http://localhost:5173",
+  "https://ai-receptionist-frontend-xi.vercel.app",
+];
 
-// =====================
-// CORS FIX FOR RAILWAY + VERCEL
-// =====================
-app.use(
-  cors({
-    origin: [
-      "http://localhost:5173",
-      "https://ai-receptionist-frontend-xi.vercel.app",
-    ],
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+const corsOptions = {
+  origin: (origin, cb) => {
+    // allow server-to-server / Postman / curl (no origin)
+    if (!origin) return cb(null, true);
+
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+
+    return cb(new Error(`CORS blocked origin: ${origin}`), false);
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions)); // IMPORTANT: preflight
 
 // =====================
 // BODY PARSERS
@@ -48,19 +55,25 @@ connectDB();
 // =====================
 // ROUTES
 // =====================
-app.use("/", webhookRoutes);
-app.use("/calls", callRoutes);
-
-// Old agent routes – keep for now as admin-only / testing
-app.use("/agents", agentRoutes);
-
-// New proper auth + business / dashboard API
-app.use("/auth", authRoutes);
-app.use("/business", businessRoutes);
-
-// HEALTH CHECK
+// Put health check FIRST so it never gets shadowed
 app.get("/", (req, res) => {
   res.send("AI Receptionist Backend is running...");
+});
+
+// Don’t mount webhooks at "/" (too broad). Give it a path.
+app.use("/", webhookRoutes);
+
+app.use("/calls", callRoutes);
+app.use("/agents", agentRoutes);
+app.use("/auth", authRoutes);
+app.use("/business", businessRoutes);
+app.use("/business/agent", agentMeRoutes);
+// =====================
+// ERROR HANDLER (so you see real CORS errors)
+// =====================
+app.use((err, req, res, next) => {
+  console.error("SERVER ERROR:", err);
+  res.status(500).json({ error: err.message || "Server error" });
 });
 
 // =====================

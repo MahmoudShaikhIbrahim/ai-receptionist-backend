@@ -1,51 +1,88 @@
-// src/routes/businessRoutes.js
-
 const express = require("express");
+const router = express.Router();
+const jwt = require("jsonwebtoken");
+
 const Business = require("../models/Business");
 const Agent = require("../models/Agent");
-const { requireAuth } = require("../middleware/authMiddleware");
 
-const router = express.Router();
-
-// All routes here require authentication
-router.use(requireAuth);
-
-// GET /business/me  → business profile + agent
-router.get("/me", async (req, res) => {
+/* ======================
+   AUTH MIDDLEWARE
+====================== */
+function auth(req, res, next) {
   try {
-    const business = await Business.findById(req.business.id).lean();
-    if (!business) {
-      return res.status(404).json({ error: "Business not found" });
-    }
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) return res.status(401).json({ error: "No token" });
 
-    let agent = null;
-    if (business.agentId) {
-      agent = await Agent.findById(business.agentId).lean();
-    } else {
-      agent = await Agent.findOne({ businessId: business._id }).lean();
-    }
-
-    res.json({
-      business: {
-        id: business._id,
-        businessName: business.businessName,
-        email: business.email,
-        businessType: business.businessType,
-        ownerName: business.ownerName,
-        businessPhone: business.businessPhone,
-        timezone: business.timezone,
-        languagePreference: business.languagePreference,
-      },
-      agent,
-    });
-  } catch (err) {
-    console.error("GET /business/me error:", err);
-    res.status(500).json({ error: "Server error" });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.businessId = decoded.id;
+    next();
+  } catch {
+    return res.status(401).json({ error: "Invalid token" });
   }
+}
+
+/* ======================
+   GET /business/me
+   Returns business + agent (read-only)
+====================== */
+router.get("/me", auth, async (req, res) => {
+  const business = await Business.findById(req.businessId);
+  const agent = await Agent.findOne({ businessId: req.businessId });
+
+  if (!business) {
+    return res.status(404).json({ error: "Business not found" });
+  }
+
+  res.json({ business, agent });
 });
 
-// Later we’ll add:
-// PUT /business/me  → update settings
-// PUT /business/me/agent → update agent config
+/* ======================
+   PUT /business/profile
+   Update BUSINESS profile only
+====================== */
+router.put("/profile", auth, async (req, res) => {
+  const business = await Business.findById(req.businessId);
+  if (!business) {
+    return res.status(404).json({ error: "Business not found" });
+  }
+
+  const fields = [
+    "businessName",
+    "ownerPhoneNumber",
+    "businessPhoneNumber",
+  ];
+
+  fields.forEach((f) => {
+    if (req.body[f] !== undefined) {
+      business[f] = req.body[f];
+    }
+  });
+
+  await business.save();
+
+  res.json({
+    message: "Business profile updated",
+    business,
+  });
+});
+
+/* ======================
+   PUT /business/hours
+   Update opening hours (Agent-owned)
+====================== */
+router.put("/hours", auth, async (req, res) => {
+  const agent = await Agent.findOne({ businessId: req.businessId });
+  if (!agent) {
+    return res.status(404).json({ error: "Agent not found" });
+  }
+
+  agent.openingHours = req.body;
+  await agent.save();
+
+  res.json({
+    message: "Opening hours updated",
+    openingHours: agent.openingHours,
+  });
+});
 
 module.exports = router;

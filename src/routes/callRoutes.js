@@ -1,9 +1,14 @@
+// src/routes/callRoutes.js
+
 const express = require("express");
 const router = express.Router();
 const Call = require("../models/Call");
 
-// GET all calls (newest first)
-router.get("/", async (req, res) => {
+/* ======================
+   GET ALL CALLS
+   ADMIN ONLY (for now)
+====================== */
+router.get("/", async (_req, res) => {
   try {
     const calls = await Call.find().sort({ timestamp: -1 });
     res.json(calls);
