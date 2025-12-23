@@ -5,23 +5,32 @@ const jwt = require("jsonwebtoken");
 const Business = require("../models/Business");
 const Agent = require("../models/Agent");
 
+/* ======================
+   TOKEN HELPER (FIXED)
+====================== */
 const createToken = (business) => {
   return jwt.sign(
-    { id: business._id, email: business.email },
+    { businessId: business._id, id: business._id, email: business.email },
     process.env.JWT_SECRET,
     { expiresIn: "30d" }
   );
 };
 
-// =========================
-// REGISTER BUSINESS
-// =========================
+/* ======================
+   REGISTER BUSINESS
+====================== */
 router.post("/register", async (req, res) => {
   try {
     const { businessName, email, password, businessType } = req.body;
 
+    if (!businessName || !email || !password) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
     const exists = await Business.findOne({ email });
-    if (exists) return res.status(400).json({ error: "Email already used" });
+    if (exists) {
+      return res.status(400).json({ error: "Email already used" });
+    }
 
     const business = await Business.create({
       businessName,
@@ -30,7 +39,6 @@ router.post("/register", async (req, res) => {
       businessType,
     });
 
-    // Create default agent
     const agent = await Agent.create({
       businessId: business._id,
       name: `${businessName} AI Receptionist`,
@@ -44,7 +52,7 @@ router.post("/register", async (req, res) => {
 
     const token = createToken(business);
 
-    res.json({
+    res.status(201).json({
       message: "Account created",
       token,
       business: {
@@ -60,18 +68,22 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// =========================
-// LOGIN
-// =========================
+/* ======================
+   LOGIN
+====================== */
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const business = await Business.findOne({ email });
-    if (!business) return res.status(400).json({ error: "Invalid email or password" });
+    const business = await Business.findOne({ email }).select("+password");
+    if (!business || !business.password) {
+      return res.status(400).json({ error: "Invalid email or password" });
+    }
 
     const correct = await business.comparePassword(password);
-    if (!correct) return res.status(400).json({ error: "Invalid email or password" });
+    if (!correct) {
+      return res.status(400).json({ error: "Invalid email or password" });
+    }
 
     const token = createToken(business);
 
@@ -89,5 +101,4 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
 module.exports = router;

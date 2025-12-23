@@ -1,10 +1,11 @@
+// src/routes/webhookRoutes.js
 const express = require("express");
 const router = express.Router();
 const { handleWebhook } = require("../controllers/webhookController");
 
-// Retell sends raw body for webhooks — required for proper signature validation later
+// Retell webhook endpoint
 router.post(
-  "/retell/webhook",
+  "/retell",
   express.json({ type: "*/*" }),
   handleWebhook
 );
