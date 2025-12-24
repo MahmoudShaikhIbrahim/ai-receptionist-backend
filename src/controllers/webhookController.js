@@ -1,39 +1,69 @@
 const Agent = require("../models/Agent");
 const Call = require("../models/Call");
 
+// Small helper: get nested value safely
+function get(obj, path) {
+  return path.split(".").reduce((acc, key) => (acc && acc[key] != null ? acc[key] : null), obj);
+}
+
+// Some providers wrap the real payload inside `data` / `payload`
+function unwrap(raw) {
+  if (!raw || typeof raw !== "object") return raw;
+  return raw.data || raw.payload || raw.body || raw;
+}
+
+function extractIds(rawEvent) {
+  const e = unwrap(rawEvent);
+
+  // Support MANY possible shapes
+  const retellAgentId =
+    get(e, "agent.id") ||
+    get(e, "agent.agent_id") ||
+    get(e, "agentId") ||
+    get(e, "agent_id") ||
+    get(e, "retell_agent_id") ||
+    get(e, "retellAgentId");
+
+  const callId =
+    get(e, "call.id") ||
+    get(e, "call.call_id") ||
+    get(e, "callId") ||
+    get(e, "call_id");
+
+  return { e, retellAgentId, callId };
+}
+
+function normalizeIntent(rawIntent) {
+  const allowed = new Set(["order", "booking", "inquiry"]);
+  if (typeof rawIntent === "string" && allowed.has(rawIntent)) return rawIntent;
+  return "unknown";
+}
+
 exports.handleWebhook = async (req, res) => {
   try {
-    const event = req.body;
-
-    // 🔴 Correct Retell fields
-    const retellAgentId = event?.agent?.id;
-    const callId = event?.call?.id;
+    const raw = req.body;
+    const { e, retellAgentId, callId } = extractIds(raw);
 
     if (!retellAgentId || !callId) {
-      console.warn("Webhook ignored (missing agent.id or call.id)");
+      // Minimal debug that won’t spam huge logs
+      console.warn("Webhook ignored (missing ids)", {
+        topLevelKeys: raw && typeof raw === "object" ? Object.keys(raw) : typeof raw,
+        agentKeys: e?.agent && typeof e.agent === "object" ? Object.keys(e.agent) : typeof e?.agent,
+        callKeys: e?.call && typeof e.call === "object" ? Object.keys(e.call) : typeof e?.call,
+      });
       return res.status(200).json({ ignored: true });
     }
 
-    // 🔑 PRIMARY ROUTING KEY
     const agent = await Agent.findOne({ retellAgentId });
-
     if (!agent) {
       console.warn("Unknown Retell agent:", retellAgentId);
       return res.status(200).json({ ignored: true });
     }
 
-    // Idempotency (Retell retries)
     const exists = await Call.findOne({ callId });
-    if (exists) {
-      return res.status(200).json({ duplicate: true });
-    }
+    if (exists) return res.status(200).json({ duplicate: true });
 
-    // ✅ SAFE intent handling
-    const intent =
-      event?.call_analysis?.intent &&
-      ["order", "booking", "inquiry"].includes(event.call_analysis.intent)
-        ? event.call_analysis.intent
-        : "unknown";
+    const intent = normalizeIntent(get(e, "call_analysis.intent") || get(e, "intent"));
 
     await Call.create({
       businessId: agent.businessId,
@@ -41,20 +71,20 @@ exports.handleWebhook = async (req, res) => {
       retellAgentId,
       callId,
 
-      callerNumber: event?.from ?? null,
-      calleeNumber: event?.to ?? null,
+      callerNumber: get(e, "from") ?? null,
+      calleeNumber: get(e, "to") ?? null,
 
       intent,
 
-      orderData: event?.order ?? null,
-      bookingData: event?.booking ?? null,
+      orderData: get(e, "order") ?? null,
+      bookingData: get(e, "booking") ?? null,
 
-      summary: event?.call_analysis?.call_summary ?? null,
-      transcript: event?.transcript ?? null,
+      summary: get(e, "call_analysis.call_summary") ?? get(e, "summary") ?? null,
+      transcript: get(e, "transcript") ?? null,
 
-      startedAt: event?.started_at ? new Date(event.started_at) : null,
-      endedAt: event?.ended_at ? new Date(event.ended_at) : null,
-      durationSeconds: event?.duration_seconds ?? null,
+      startedAt: get(e, "started_at") ? new Date(get(e, "started_at")) : null,
+      endedAt: get(e, "ended_at") ? new Date(get(e, "ended_at")) : null,
+      durationSeconds: get(e, "duration_seconds") ?? null,
     });
 
     console.log("✅ Call saved:", callId);
