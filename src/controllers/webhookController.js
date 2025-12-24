@@ -1,82 +1,53 @@
-// src/controllers/webhookController.js
-const Agent = require("../models/Agent");
-const Call = require("../models/Call");
-
 exports.handleWebhook = async (req, res) => {
   try {
-    const payload = req.body;
+    const event = req.body;
 
-    console.log("📞 Retell webhook received:", JSON.stringify(payload, null, 2));
-
-    // ---- NORMALIZE RETELL PAYLOAD ----
-    const data =
-      payload?.data ||
-      payload?.call ||
-      payload;
-
-    const callId =
-      data?.call_id ||
-      data?.id ||
-      null;
-
-    const retellAgentId =
-      data?.agent_id ||
-      data?.agentId ||
-      null;
-
-    if (!callId || !retellAgentId) {
-      console.warn("⚠️ Missing callId or agentId. Ignored.");
+    if (!event || !event.agent_id || !event.call_id) {
       return res.status(200).json({ ignored: true });
     }
 
-    // ---- FIND AGENT (PRIMARY ROUTING KEY) ----
-    const agent = await Agent.findOne({ retellAgentId });
+    const agent = await Agent.findOne({
+      retellAgentId: event.agent_id,
+    });
 
     if (!agent) {
-      console.warn("⚠️ Unknown Retell agent:", retellAgentId);
+      console.warn("⚠️ Unknown Retell agent:", event.agent_id);
       return res.status(200).json({ ignored: true });
     }
 
-    // ---- IDEMPOTENCY ----
-    const exists = await Call.findOne({ callId });
+    const exists = await Call.findOne({ callId: event.call_id });
     if (exists) {
       return res.status(200).json({ duplicate: true });
     }
 
-    // ---- SAVE CALL ----
+    // ✅ THIS MUST BE REACHABLE
     await Call.create({
       businessId: agent.businessId,
       agentId: agent._id,
-      retellAgentId,
+      retellAgentId: agent.retellAgentId,
+      callId: event.call_id,
 
-      callId,
+      callerNumber: event.from ?? null,
+      calleeNumber: event.to ?? null,
 
-      callerNumber: data?.from || null,
-      calleeNumber: data?.to || null,
+      intent: event.intent ?? "unknown",
 
-      intent: data?.intent || null,
-      summary: data?.summary || null,
-      transcript: data?.transcript || null,
+      orderData: event.order ?? null,
+      bookingData: event.booking ?? null,
 
-      orderData: data?.order || null,
-      bookingData: data?.booking || null,
+      summary: event.call_analysis?.call_summary ?? null,
+      transcript: event.transcript ?? null,
 
-      startedAt: data?.started_at
-        ? new Date(data.started_at)
-        : null,
-
-      endedAt: data?.ended_at
-        ? new Date(data.ended_at)
-        : null,
-
-      durationSeconds: data?.duration_seconds || null,
+      startedAt: event.started_at ? new Date(event.started_at) : null,
+      endedAt: event.ended_at ? new Date(event.ended_at) : null,
+      durationSeconds: event.duration_seconds ?? null,
     });
 
-    console.log("✅ Call saved:", callId);
+    console.log("✅ Call saved:", event.call_id);
+    return res.status(200).json({ received: true });
 
-    return res.status(200).json({ saved: true });
   } catch (err) {
-    console.error("❌ Webhook processing error:", err);
+    console.error("❌ Webhook error:", err);
     return res.status(500).json({ error: "Webhook failed" });
   }
 };
