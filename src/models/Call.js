@@ -2,37 +2,56 @@ const mongoose = require("mongoose");
 
 const CallSchema = new mongoose.Schema(
   {
-    // External identifiers (source of truth)
-    call_id: { type: String, required: true, index: true },
-    provider: { type: String, default: "retell" },
-
-    // Retell agent info (string-based)
-    agent_id: { type: String },      // retell agent id
-    agent_name: { type: String },
-
-    // Call data
-    from: String,
-    to: String,
-    call_type: String,
-    outcome: String,
-    duration: Number,
-    transcript: String,
-    timestamp: Date,
-
-    // Internal linking (optional, async)
-    agentRef: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Agent",
-      default: null,
-    },
-    businessRef: {
+    // Routing (PRIMARY)
+    businessId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",
-      default: null,
+      required: true,
+      index: true,
     },
 
-    // Full raw payload (critical for future-proofing)
-    raw: { type: Object, required: true },
+    agentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Agent",
+      required: true,
+      index: true,
+    },
+
+    retellAgentId: {
+      type: String,
+      required: true,
+      index: true,
+    },
+
+    // Retell identifiers
+    callId: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+
+    // Call metadata
+    callerNumber: { type: String },
+    calleeNumber: { type: String },
+
+    // Classification
+    intent: {
+      type: String,
+      enum: ["order", "booking", "inquiry", "unknown"],
+      default: "unknown",
+    },
+
+    // Structured outcomes
+    orderData: { type: Object, default: null },
+    bookingData: { type: Object, default: null },
+
+    // AI output
+    summary: { type: String },
+    transcript: { type: String },
+
+    startedAt: { type: Date },
+    endedAt: { type: Date },
+    durationSeconds: { type: Number },
   },
   { timestamps: true }
 );

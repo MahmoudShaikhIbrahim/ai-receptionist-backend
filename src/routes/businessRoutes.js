@@ -20,6 +20,13 @@ router.get("/me", requireAuth, async (req, res) => {
   res.json({ business, agent });
 });
 
+const { getBusinessCalls } = require("../controllers/callController");
+
+// ======================
+// GET /business/calls
+// ======================
+router.get("/calls", requireAuth, getBusinessCalls);
+
 /* ======================
    PUT /business/profile
 ====================== */
