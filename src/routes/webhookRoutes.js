@@ -1,11 +1,12 @@
+// src/routes/webhookRoutes.js
 const express = require("express");
 const router = express.Router();
 const { handleWebhook } = require("../controllers/webhookController");
 
-// Accept BOTH paths safely
+// Keep BOTH endpoints to avoid breaking Retell settings
 router.post(
-  ["/retell", "/retell/webhook"],
-  express.json({ type: "*/*" }),
+  ["/retell/webhook", "/retell"],
+  express.json({ type: "*/*", limit: "2mb" }),
   handleWebhook
 );
 
