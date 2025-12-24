@@ -1,14 +1,10 @@
-// src/routes/webhookRoutes.js
 const express = require("express");
 const router = express.Router();
 const { handleWebhook } = require("../controllers/webhookController");
 
-/**
- * Retell Webhook
- * Receives call events
- */
+// Accept BOTH paths safely
 router.post(
-  "/retell",
+  ["/retell", "/retell/webhook"],
   express.json({ type: "*/*" }),
   handleWebhook
 );
