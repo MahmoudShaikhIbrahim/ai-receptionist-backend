@@ -5,6 +5,7 @@ const cors = require("cors");
 
 const connectDB = require("./config/db");
 
+// Routes
 const webhookRoutes = require("./routes/webhookRoutes");
 const authRoutes = require("./routes/authRoutes");
 const callRoutes = require("./routes/callRoutes");
@@ -15,9 +16,9 @@ const adminAgentRoutes = require("./routes/adminAgentRoutes");
 
 const app = express();
 
-// =====================
-// CORS
-// =====================
+/* =====================
+   CORS
+===================== */
 const ALLOWED_ORIGINS = [
   "http://localhost:5173",
   "https://ai-receptionist-frontend-xi.vercel.app",
@@ -26,7 +27,7 @@ const ALLOWED_ORIGINS = [
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // Postman/curl/server-to-server
+      if (!origin) return cb(null, true); // server-to-server / Postman
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
       return cb(new Error(`CORS blocked origin: ${origin}`), false);
     },
@@ -36,40 +37,56 @@ app.use(
   })
 );
 
-// =====================
-// BODY PARSER
-// =====================
+/* =====================
+   BODY PARSER
+===================== */
 app.use(express.json({ limit: "10mb" }));
 
-// =====================
-// DB
-// =====================
+/* =====================
+   DATABASE
+===================== */
 connectDB();
 
-// =====================
-// ROUTES
-// =====================
-app.get("/", (req, res) => res.send("AI Receptionist Backend is running..."));
+/* =====================
+   HEALTH CHECK
+===================== */
+app.get("/", (_req, res) => {
+  res.send("AI Receptionist Backend is running...");
+});
 
-// webhookRoutes defines: POST /retell/webhook
+/* =====================
+   ROUTES
+===================== */
+
+// 🔔 Retell webhook (POST /retell/webhook)
 app.use("/", webhookRoutes);
 
+// 🔐 Auth
 app.use("/auth", authRoutes);
-app.use("/calls", callRoutes);
-app.use("/agents", agentRoutes);
+
+// 🧠 Admin
 app.use("/admin", adminAgentRoutes);
 
-// IMPORTANT: mount this BEFORE /business
+// 🏢 Business-scoped APIs
 app.use("/business/agent", agentMeRoutes);
+app.use("/business/calls", callRoutes);
 app.use("/business", businessRoutes);
 
-// =====================
-// ERROR HANDLER
-// =====================
-app.use((err, req, res, next) => {
+// 👨‍💼 Agent admin (internal / admin usage)
+app.use("/agents", agentRoutes);
+
+/* =====================
+   GLOBAL ERROR HANDLER
+===================== */
+app.use((err, req, res, _next) => {
   console.error("SERVER ERROR:", err);
   res.status(500).json({ error: err.message || "Server error" });
 });
 
+/* =====================
+   START SERVER
+===================== */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});

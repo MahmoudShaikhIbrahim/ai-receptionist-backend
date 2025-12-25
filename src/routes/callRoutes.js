@@ -1,35 +1,54 @@
-const express = require("express");
-const router = express.Router();
-const requireAuth = require("../middleware/authMiddleware");
 const Call = require("../models/Call");
 
-// All calls
-router.get("/", requireAuth, async (req, res) => {
-  const calls = await Call.find({
-    businessId: req.business.id,
-  }).sort({ createdAt: -1 });
+exports.getBusinessCalls = async (req, res) => {
+  try {
+    const businessId = req.businessId;
 
-  res.json({ calls });
-});
+    if (!businessId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
-// Bookings
-router.get("/bookings", requireAuth, async (req, res) => {
-  const bookings = await Call.find({
-    businessId: req.business.id,
-    "booking.date": { $exists: true },
-  }).sort({ createdAt: -1 });
+    const {
+      type = "all",
+      page = 1,
+      limit = 20,
+    } = req.query;
 
-  res.json({ bookings });
-});
+    const safeLimit = Math.min(Number(limit) || 20, 100);
+    const safePage = Math.max(Number(page) || 1, 1);
+    const skip = (safePage - 1) * safeLimit;
 
-// Orders
-router.get("/orders", requireAuth, async (req, res) => {
-  const orders = await Call.find({
-    businessId: req.business.id,
-    "order.items.0": { $exists: true },
-  }).sort({ createdAt: -1 });
+    const filter = { businessId };
 
-  res.json({ orders });
-});
+    if (type === "order") {
+      filter.orderData = { $ne: null };
+    }
 
-module.exports = router;
+    if (type === "booking") {
+      filter.bookingData = { $ne: null };
+    }
+
+    const [calls, total] = await Promise.all([
+      Call.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(safeLimit)
+        .lean(),
+
+      Call.countDocuments(filter),
+    ]);
+
+    return res.json({
+      data: calls,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        pages: Math.ceil(total / safeLimit),
+      },
+    });
+  } catch (err) {
+    console.error("❌ getBusinessCalls error:", err);
+    return res.status(500).json({ error: "Failed to fetch calls" });
+  }
+};
