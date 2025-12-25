@@ -1,15 +1,7 @@
 const Call = require("../models/Call");
 
-/**
- * GET /calls
- * Query params:
- *  - type: all | order | booking
- *  - page: number (default 1)
- *  - limit: number (default 20, max 100)
- */
 exports.getBusinessCalls = async (req, res) => {
   try {
-    // businessId is injected by auth middleware
     const businessId = req.businessId;
 
     if (!businessId) {
@@ -24,12 +16,8 @@ exports.getBusinessCalls = async (req, res) => {
 
     const filter = { businessId };
 
-    // Filter by call type
-    if (type === "order") {
-      filter.orderData = { $ne: null };
-    } else if (type === "booking") {
-      filter.bookingData = { $ne: null };
-    }
+    if (type === "order") filter.orderData = { $ne: null };
+    if (type === "booking") filter.bookingData = { $ne: null };
 
     const [calls, total] = await Promise.all([
       Call.find(filter)
@@ -37,7 +25,6 @@ exports.getBusinessCalls = async (req, res) => {
         .skip(skip)
         .limit(safeLimit)
         .lean(),
-
       Call.countDocuments(filter),
     ]);
 
