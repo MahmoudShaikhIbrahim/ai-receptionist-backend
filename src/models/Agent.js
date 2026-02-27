@@ -76,5 +76,10 @@ const AgentSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+// Ensure one-to-one mapping between Retell agent and business
+AgentSchema.index(
+  { retellAgentId: 1 },
+  { unique: true, sparse: true }
+);
 
 module.exports = mongoose.model("Agent", AgentSchema);

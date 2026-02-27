@@ -39,14 +39,13 @@ router.post("/register", async (req, res) => {
       businessType,
     });
 
+    // CREATE AGENT using ONLY valid schema fields
     const agent = await Agent.create({
       businessId: business._id,
-      name: `${businessName} AI Receptionist`,
       businessName,
       ownerEmail: email,
+      businessPhoneNumber: null,
       businessType,
-      languagePreference: "ar",
-      systemPrompt: "",
       openingHours: {},
     });
 

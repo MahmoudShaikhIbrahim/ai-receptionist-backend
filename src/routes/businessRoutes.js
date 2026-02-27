@@ -1,4 +1,5 @@
 // src/routes/businessRoutes.js
+
 const express = require("express");
 const router = express.Router();
 
@@ -7,9 +8,9 @@ const Business = require("../models/Business");
 const Agent = require("../models/Agent");
 const { getBusinessCalls } = require("../controllers/callController");
 
-/* ======================
+/* =====================================================
    GET /business/me
-====================== */
+===================================================== */
 router.get("/me", requireAuth, async (req, res) => {
   try {
     const business = await Business.findById(req.businessId).lean();
@@ -19,21 +20,21 @@ router.get("/me", requireAuth, async (req, res) => {
 
     const agent = await Agent.findOne({ businessId: req.businessId }).lean();
 
-    res.json({ business, agent });
+    return res.json({ business, agent });
   } catch (err) {
     console.error("GET /business/me error:", err);
-    res.status(500).json({ error: "Failed to fetch business data" });
+    return res.status(500).json({ error: "Failed to fetch business data" });
   }
 });
 
-/* ======================
+/* =====================================================
    GET /business/calls
-====================== */
+===================================================== */
 router.get("/calls", requireAuth, getBusinessCalls);
 
-/* ======================
+/* =====================================================
    PUT /business/profile
-====================== */
+===================================================== */
 router.put("/profile", requireAuth, async (req, res) => {
   try {
     const business = await Business.findById(req.businessId);
@@ -41,24 +42,47 @@ router.put("/profile", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Business not found" });
     }
 
-    const allowed = ["businessName", "businessType"];
+    // Allowed fields for profile/settings updates
+    const allowed = ["businessName", "liveUpcomingWindowMinutes"];
+
     allowed.forEach((key) => {
       if (req.body[key] !== undefined) {
         business[key] = req.body[key];
       }
     });
 
+    // Validate liveUpcomingWindowMinutes defensively
+    if (req.body.liveUpcomingWindowMinutes !== undefined) {
+      const n = Number(req.body.liveUpcomingWindowMinutes);
+      if (!Number.isFinite(n)) {
+        return res.status(400).json({ error: "liveUpcomingWindowMinutes must be a number" });
+      }
+      if (n < 0 || n > 180) {
+        return res.status(400).json({ error: "liveUpcomingWindowMinutes must be between 0 and 180" });
+      }
+      business.liveUpcomingWindowMinutes = n;
+    }
+
+    // Normalize businessName
+    if (req.body.businessName !== undefined) {
+      business.businessName = String(req.body.businessName).trim();
+      if (!business.businessName) {
+        return res.status(400).json({ error: "businessName cannot be empty" });
+      }
+    }
+
     await business.save();
-    res.json({ business });
+
+    return res.json({ business });
   } catch (err) {
     console.error("PUT /business/profile error:", err);
-    res.status(500).json({ error: "Failed to update business profile" });
+    return res.status(500).json({ error: "Failed to update business profile" });
   }
 });
 
-/* ======================
+/* =====================================================
    PUT /business/hours
-====================== */
+===================================================== */
 router.put("/hours", requireAuth, async (req, res) => {
   try {
     const agent = await Agent.findOne({ businessId: req.businessId });
@@ -69,10 +93,10 @@ router.put("/hours", requireAuth, async (req, res) => {
     agent.openingHours = req.body;
     await agent.save();
 
-    res.json({ openingHours: agent.openingHours });
+    return res.json({ openingHours: agent.openingHours });
   } catch (err) {
     console.error("PUT /business/hours error:", err);
-    res.status(500).json({ error: "Failed to update opening hours" });
+    return res.status(500).json({ error: "Failed to update opening hours" });
   }
 });
 

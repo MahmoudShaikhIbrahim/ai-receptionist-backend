@@ -5,13 +5,14 @@ const cors = require("cors");
 
 const connectDB = require("./config/db");
 
-const webhookRoutes = require("./routes/webhookRoutes");
+const retellWebhookRoutes = require("./routes/retellWebhookRoutes");
 const authRoutes = require("./routes/authRoutes");
 const callRoutes = require("./routes/callRoutes");
-const agentRoutes = require("./routes/agentRoutes");
-const agentMeRoutes = require("./routes/agentMeRoutes");
 const businessRoutes = require("./routes/businessRoutes");
-const adminAgentRoutes = require("./routes/adminAgentRoutes");
+const bookingRoutes = require("./routes/bookingRoutes");
+const floorRoutes = require("./routes/floorRoutes");
+const tableRoutes = require("./routes/tableRoutes");
+
 
 const app = express();
 
@@ -36,7 +37,7 @@ app.use(
 );
 
 // =====================
-// BODY PARSER
+// BODY PARSER (ONCE)
 // =====================
 app.use(express.json({ limit: "10mb" }));
 
@@ -50,13 +51,16 @@ connectDB();
 // =====================
 app.get("/", (req, res) => res.send("AI Receptionist Backend is running"));
 
-app.use("/", webhookRoutes);
+// ✅ Retell webhook ONLY (NO Cal)
+app.use("/webhooks", retellWebhookRoutes);
+
+// ✅ Normal app routes
 app.use("/auth", authRoutes);
 app.use("/calls", callRoutes);
-app.use("/agents", agentRoutes);
-app.use("/admin", adminAgentRoutes);
-app.use("/business/agent", agentMeRoutes);
 app.use("/business", businessRoutes);
+app.use("/bookings", bookingRoutes);
+app.use("/floors", floorRoutes);
+app.use("/tables", tableRoutes);
 
 // =====================
 // ERROR HANDLER
@@ -67,6 +71,4 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

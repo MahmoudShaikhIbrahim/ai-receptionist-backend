@@ -8,12 +8,17 @@
     "dev": "nodemon src/server.js"
   },
   "dependencies": {
+    "axios": "^1.13.5",
     "bcryptjs": "^3.0.3",
+    "chrono-node": "^2.9.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^7.6.0"
+    "luxon": "^3.7.2",
+    "mongoose": "^7.6.0",
+    "words-to-numbers": "^1.5.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

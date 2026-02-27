@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const CallSchema = new mongoose.Schema(
   {
-    // Routing (PRIMARY)
+    // 🔑 Multi-tenant routing (REQUIRED)
     businessId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",
@@ -17,43 +17,80 @@ const CallSchema = new mongoose.Schema(
       index: true,
     },
 
+    // 🔑 Retell identifiers
     retellAgentId: {
       type: String,
       required: true,
       index: true,
     },
 
-    // Retell identifiers
     callId: {
       type: String,
       required: true,
       unique: true,
+      index: true,
     },
 
-    // Call metadata
-    callerNumber: { type: String },
-    calleeNumber: { type: String },
+    // ☎️ Phone metadata
+    callerNumber: {
+      type: String,
+      default: null,
+    },
 
-    // Classification
+    calleeNumber: {
+      type: String,
+      default: null,
+    },
+
+    // 🧠 Classification (optional, future-proof)
     intent: {
       type: String,
       enum: ["order", "booking", "inquiry", "unknown"],
       default: "unknown",
     },
 
-    // Structured outcomes
-    orderData: { type: Object, default: null },
-    bookingData: { type: Object, default: null },
+    // 📦 Structured outcomes (filled later)
+    orderData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
 
-    // AI output
-    summary: { type: String },
-    transcript: { type: String },
+    bookingData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
 
-    startedAt: { type: Date },
-    endedAt: { type: Date },
-    durationSeconds: { type: Number },
+    // 📝 AI outputs
+    summary: {
+      type: String,
+      default: null,
+    },
+
+    transcript: {
+      type: String,
+      default: null,
+    },
+
+    // ⏱️ Timing
+    startedAt: {
+      type: Date,
+      default: null,
+    },
+
+    endedAt: {
+      type: Date,
+      default: null,
+    },
+
+    durationSeconds: {
+      type: Number,
+      default: null,
+    },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    strict: true, // ⛔ prevents silent garbage fields
+  }
 );
 
 module.exports = mongoose.model("Call", CallSchema);

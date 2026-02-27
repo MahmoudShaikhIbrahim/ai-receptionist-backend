@@ -1,3 +1,5 @@
+// src/models/Business.js
+
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
@@ -9,13 +11,16 @@ const BusinessSchema = new mongoose.Schema(
     businessName: {
       type: String,
       required: true,
+      trim: true,
     },
 
-    // Owner / account email
     email: {
       type: String,
       required: true,
       unique: true,
+      lowercase: true,
+      index: true,
+      trim: true,
     },
 
     password: {
@@ -24,14 +29,60 @@ const BusinessSchema = new mongoose.Schema(
     },
 
     /* ======================
-       CONTACT INFORMATION
+       CONTACT INFO
     ====================== */
     ownerPhoneNumber: {
-      type: String, // decision-maker contact
+      type: String,
+      trim: true,
+      default: null,
     },
 
     businessPhoneNumber: {
-      type: String, // public-facing business number
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    /* ======================
+       RESTAURANT SETTINGS
+    ====================== */
+    timezone: {
+      type: String,
+      required: true,
+      default: "Asia/Dubai",
+    },
+
+    slotDurationMinutes: {
+      type: Number,
+      required: true,
+      default: 15,
+      min: 5,
+      max: 60,
+    },
+
+    defaultDiningDurationMinutes: {
+      type: Number,
+      required: true,
+      default: 90,
+      min: 15,
+      max: 300,
+    },
+
+    /* ======================
+       LIVE FLOOR SETTINGS
+    ====================== */
+    liveUpcomingWindowMinutes: {
+      type: Number,
+      required: true,
+      default: 30,
+      min: 0,
+      max: 180,
+    },
+
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true,
     },
   },
   { timestamps: true }
