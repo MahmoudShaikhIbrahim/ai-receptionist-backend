@@ -7,16 +7,14 @@ const Business = require("../models/Business");
 
 exports.createTable = async (req, res) => {
   try {
-    const { label, capacity, floorId, x, y, w, h, zone } = req.body;
+    const { label, capacity, floorId, x, y, w, h, zone, shape } = req.body;
 
-    // Required validation
     if (!label || !capacity) {
       return res.status(400).json({
         error: "Label and capacity are required",
       });
     }
 
-    // Floor ownership validation
     if (floorId) {
       const floor = await Floor.findOne({
         _id: floorId,
@@ -30,11 +28,15 @@ exports.createTable = async (req, res) => {
       }
     }
 
+    const allowedShapes = ["rect", "square", "round", "oval"];
+    const safeShape = allowedShapes.includes(shape) ? shape : "rect";
+
     const table = await Table.create({
       businessId: req.businessId,
       label: String(label).trim(),
       capacity: Number(capacity),
       floorId: floorId || null,
+      shape: safeShape,
       x: x ?? 0,
       y: y ?? 0,
       w: w ?? 80,
@@ -121,9 +123,19 @@ exports.updateTable = async (req, res) => {
       return res.status(404).json({ error: "Table not found" });
     }
 
-    const { label, capacity, floorId, x, y, w, h, zone, isActive } = req.body;
+    const {
+      label,
+      capacity,
+      floorId,
+      x,
+      y,
+      w,
+      h,
+      zone,
+      isActive,
+      shape,
+    } = req.body;
 
-    // Floor validation if provided
     if (floorId !== undefined && floorId !== null) {
       const floor = await Floor.findOne({
         _id: floorId,
@@ -139,7 +151,6 @@ exports.updateTable = async (req, res) => {
       table.floorId = floorId;
     }
 
-    // Label update
     if (label !== undefined) {
       const trimmed = String(label).trim();
       if (!trimmed) {
@@ -150,12 +161,20 @@ exports.updateTable = async (req, res) => {
       table.label = trimmed;
     }
 
-    // Capacity update
     if (capacity !== undefined) {
       table.capacity = Number(capacity);
     }
 
-    // Layout updates
+    if (shape !== undefined) {
+      const allowedShapes = ["rect", "square", "round", "oval"];
+      if (!allowedShapes.includes(shape)) {
+        return res.status(400).json({
+          error: "Invalid shape value",
+        });
+      }
+      table.shape = shape;
+    }
+
     if (x !== undefined) table.x = x;
     if (y !== undefined) table.y = y;
     if (w !== undefined) table.w = w;
@@ -377,5 +396,64 @@ exports.setTableMaintenance = async (req, res) => {
   } catch (err) {
     console.error("SET TABLE MAINTENANCE error:", err);
     return res.status(500).json({ error: "Failed to update maintenance" });
+  }
+};
+
+/* =====================================================
+   SET TABLE AVAILABLE
+   PATCH /tables/:id/available
+   - Removes maintenance
+   - Ends seated booking immediately
+   - Cancels confirmed booking if active
+===================================================== */
+exports.setTableAvailable = async (req, res) => {
+  try {
+    const businessId = req.businessId;
+    const tableId = req.params.id;
+
+    const table = await Table.findOne({
+      _id: tableId,
+      businessId,
+      isActive: true,
+    });
+
+    if (!table) {
+      return res.status(404).json({ error: "Table not found" });
+    }
+
+    const now = new Date();
+
+    // 1️⃣ Remove maintenance if active
+    if (table.isMaintenance) {
+      table.isMaintenance = false;
+      await table.save();
+    }
+
+    // 2️⃣ Find active booking
+    const activeBooking = await Booking.findOne({
+      businessId,
+      status: { $in: ["confirmed", "seated"] },
+      "tables.tableId": table._id,
+      endIso: { $gt: now },
+    });
+
+    if (activeBooking) {
+      if (activeBooking.status === "seated") {
+        // End immediately
+        activeBooking.endIso = now;
+        activeBooking.status = "completed";
+      } else if (activeBooking.status === "confirmed") {
+        activeBooking.status = "cancelled";
+      }
+
+      await activeBooking.save();
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("SET TABLE AVAILABLE error:", err);
+    return res.status(500).json({
+      error: "Failed to set table available",
+    });
   }
 };

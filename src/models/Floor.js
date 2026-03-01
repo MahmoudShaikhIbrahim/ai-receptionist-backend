@@ -1,7 +1,6 @@
 // src/models/Floor.js
 
 const mongoose = require("mongoose");
-const { maxLength } = require("zod");
 
 const floorSchema = new mongoose.Schema(
   {
@@ -21,14 +20,37 @@ const floorSchema = new mongoose.Schema(
 
     width: {
       type: Number,
-      default: 1200, // grid canvas width
+      default: 1200,
       min: 300,
     },
 
     height: {
       type: Number,
-      default: 800, // grid canvas height
+      default: 800,
       min: 300,
+    },
+
+    /* ===========================
+       Layout Background (GridFS)
+    ============================ */
+backgroundImageUrl: {
+  type: String,
+  default: null,
+},
+layoutImageUrl: {
+  type: String,
+  default: null,
+},
+    layoutImage: {
+      type: {
+        fileId: {
+          type: mongoose.Schema.Types.ObjectId,
+        },
+        filename: String,
+        contentType: String,
+        uploadedAt: Date,
+      },
+      default: null,
     },
 
     isActive: {

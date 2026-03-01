@@ -31,6 +31,16 @@ const TableSchema = new mongoose.Schema(
       max: 50,
     },
 
+    /* ======================
+       TABLE SHAPE (NEW)
+    ====================== */
+    shape: {
+      type: String,
+      enum: ["rect", "square", "round", "oval"],
+      default: "rect",
+      index: true,
+    },
+
     // 2D Layout positioning
     x: {
       type: Number,
@@ -75,9 +85,6 @@ const TableSchema = new mongoose.Schema(
       index: true,
     },
 
-    /* ======================
-       MAINTENANCE FLAG
-    ====================== */
     isMaintenance: {
       type: Boolean,
       default: false,
@@ -93,7 +100,6 @@ TableSchema.index(
   { unique: true }
 );
 
-// Optimized filtering
 TableSchema.index(
   { businessId: 1, floorId: 1, isActive: 1 }
 );

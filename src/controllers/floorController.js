@@ -20,7 +20,7 @@ exports.getLiveFloor = async (req, res) => {
       return res.status(404).json({ error: "Floor not found" });
     }
 
-    // 2️⃣ Fetch business settings (for upcoming window)
+    // 2️⃣ Business settings
     const business = await Business.findById(businessId).lean();
     const upcomingWindowMinutes =
       business?.liveUpcomingWindowMinutes ?? 30;
@@ -37,15 +37,9 @@ exports.getLiveFloor = async (req, res) => {
       isActive: true,
     }).lean();
 
-    if (!tables.length) {
-      return res.json({ floor, tables: [] });
-    }
+    const tableIdSet = new Set(tables.map((t) => String(t._id)));
 
-    const tableIdSet = new Set(
-      tables.map((t) => String(t._id))
-    );
-
-    // 4️⃣ Get relevant bookings ONLY
+    // 4️⃣ Get relevant bookings
     const bookings = await Booking.find({
       businessId,
       status: { $in: ["confirmed", "seated"] },
@@ -73,7 +67,6 @@ exports.getLiveFloor = async (req, res) => {
       let visualStatus = "free";
       let bookingPayload = null;
 
-      // Maintenance overrides everything
       if (table.isMaintenance) {
         visualStatus = "maintenance";
       } else if (booking) {
@@ -121,10 +114,20 @@ exports.getLiveFloor = async (req, res) => {
       };
     });
 
+    // 🔥 IMPORTANT FIX
+    const layoutImageUrl = floor.layoutImageUrl || null;
+
+    // Disable caching for live data
+    res.set("Cache-Control", "no-store");
+
     return res.json({
-      floor,
+      floor: {
+        ...floor,            // KEEP width + height
+        layoutImageUrl,      // attach image
+      },
       tables: result,
     });
+
   } catch (err) {
     console.error("❌ getLiveFloor error:", err);
     return res.status(500).json({
@@ -132,3 +135,4 @@ exports.getLiveFloor = async (req, res) => {
     });
   }
 };
+

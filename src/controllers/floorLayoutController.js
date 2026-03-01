@@ -38,13 +38,20 @@ exports.getFloorLayout = async (req, res) => {
       .sort({ label: 1 })
       .lean();
 
-    return res.json({ floor, tables });
+    const layoutImageUrl = floor.layoutImageUrl || null;
+
+    return res.json({
+      floor: {
+        ...floor,
+        layoutImageUrl,
+      },
+      tables,
+    });
   } catch (err) {
     console.error("❌ getFloorLayout error:", err);
     return res.status(500).json({ error: "Failed to load floor layout" });
   }
 };
-
 /**
  * PUT /floors/:floorId/layout
  * Body:
@@ -124,7 +131,18 @@ exports.saveFloorLayout = async (req, res) => {
       ops.push({
         updateOne: {
           filter: { _id: id, businessId, floorId, isActive: true },
-          update: { $set: { x, y, w, h } },
+          update: {
+  $set: {
+    x,
+    y,
+    w,
+    h,
+    ...(typeof t.label === "string" ? { label: t.label.trim() } : {}),
+    ...(t.capacity !== undefined ? { capacity: Number(t.capacity) } : {}),
+    ...(t.shape ? { shape: t.shape } : {}),
+    ...(t.zone !== undefined ? { zone: t.zone ?? null } : {}),
+  }
+}
         },
       });
     }
@@ -148,5 +166,30 @@ exports.saveFloorLayout = async (req, res) => {
   } catch (err) {
     console.error("❌ saveFloorLayout error:", err);
     return res.status(500).json({ error: "Failed to save layout" });
+  }
+};
+
+exports.removeLayoutImage = async (req, res) => {
+  try {
+    const businessId = req.businessId;
+    const { floorId } = req.params;
+
+    const floor = await Floor.findOne({
+      _id: floorId,
+      businessId,
+      isActive: true,
+    });
+
+    if (!floor) {
+      return res.status(404).json({ error: "Floor not found" });
+    }
+
+    floor.layoutImageUrl = null;
+    await floor.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("removeLayoutImage error:", err);
+    res.status(500).json({ error: "Failed to remove layout image" });
   }
 };

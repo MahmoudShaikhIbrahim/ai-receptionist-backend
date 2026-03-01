@@ -1,7 +1,9 @@
 // src/routes/floorRoutes.js
-const express = require("express");
-const router = express.Router();
 
+const express = require("express");
+const mongoose = require("mongoose");
+const upload = require("../middleware/uploadMiddleware");
+const router = express.Router();
 const requireAuth = require("../middleware/authMiddleware");
 const Floor = require("../models/Floor");
 
@@ -9,7 +11,9 @@ const { getLiveFloor } = require("../controllers/floorController");
 const {
   getFloorLayout,
   saveFloorLayout,
+  removeLayoutImage,
 } = require("../controllers/floorLayoutController");
+
 
 /* =====================================================
    CREATE FLOOR
@@ -58,9 +62,74 @@ router.get("/", requireAuth, async (req, res) => {
 });
 
 /* =====================================================
+   FLOOR LAYOUT IMAGE UPLOAD
+   POST /floors/:floorId/layout-image
+===================================================== */
+router.post(
+  "/:floorId/layout-image",
+  requireAuth,
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      const floor = await Floor.findOne({
+        _id: req.params.floorId,
+        businessId: req.businessId,
+      });
+
+      if (!floor) {
+        return res.status(404).json({ error: "Floor not found" });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ error: "No image uploaded" });
+      }
+
+      floor.layoutImageUrl = `/uploads/${req.file.filename}`;
+      await floor.save();
+
+      return res.json({ floor });
+
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: "Upload failed" });
+    }
+  }
+);
+
+/* =====================================================
+   SERVE FLOOR LAYOUT IMAGE
+   GET /floors/:floorId/layout-image
+===================================================== */
+router.get("/:floorId/layout-image", requireAuth, async (req, res) => {
+  try {
+    const floor = await Floor.findOne({
+      _id: req.params.floorId,
+      businessId: req.businessId,
+    });
+
+    if (!floor || !floor.layoutImage?.fileId) {
+      return res.status(404).json({ error: "No layout image found" });
+    }
+
+    res.set("Content-Type", floor.layoutImage.contentType);
+
+    const downloadStream = gfs.openDownloadStream(
+      floor.layoutImage.fileId
+    );
+
+    downloadStream.pipe(res);
+  } catch (err) {
+    console.error("GET LAYOUT IMAGE error:", err);
+    return res.status(500).json({ error: "Failed to fetch layout image" });
+  }
+});
+
+/* =====================================================
    FLOOR LAYOUT (EDITOR)
 ===================================================== */
 router.get("/:floorId/layout", requireAuth, getFloorLayout);
+router.delete("/:floorId/layout-image", requireAuth, removeLayoutImage);
+
 router.put(
   "/:floorId/layout",
   requireAuth,
@@ -127,5 +196,35 @@ router.delete("/:id", requireAuth, async (req, res) => {
     return res.status(500).json({ error: "Failed to delete floor" });
   }
 });
+
+router.post(
+  "/:floorId/layout-image",
+  requireAuth,
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      const floor = await Floor.findOne({
+        _id: req.params.floorId,
+        businessId: req.businessId,
+      });
+
+      if (!floor) {
+        return res.status(404).json({ error: "Floor not found" });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ error: "No image uploaded" });
+      }
+
+      floor.layoutImageUrl = `/uploads/${req.file.filename}`;
+      await floor.save();
+
+      return res.json({ floor });
+    } catch (err) {
+      console.error("UPLOAD LAYOUT IMAGE error:", err);
+      return res.status(500).json({ error: "Upload failed" });
+    }
+  }
+);
 
 module.exports = router;
