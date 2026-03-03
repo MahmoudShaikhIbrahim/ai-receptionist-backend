@@ -13,6 +13,7 @@ const bookingRoutes = require("./routes/bookingRoutes");
 const floorRoutes = require("./routes/floorRoutes");
 const tableRoutes = require("./routes/tableRoutes");
 const path = require("path");
+const llmRoutes = require("./routes/llmRoutes");
 
 const app = express();
 
@@ -65,6 +66,7 @@ app.use(
   "/uploads",
   express.static(path.join(__dirname, "../uploads"))
 );
+app.use("/llm", llmRoutes);
 // =====================
 // ERROR HANDLER
 // =====================

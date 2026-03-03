@@ -1,98 +1,113 @@
-const Booking = require("../models/Booking");
-const Table = require("../models/Table");
+// src/controllers/bookingEngineController.js
+
 const Agent = require("../models/Agent");
+const {
+  findNearestAvailableSlot,
+} = require("../services/bookingService");
 
 /*
-  PRODUCTION BOOKING ENGINE
-  - Auto assigns table
-  - Prevents table collision
-  - Works for AI calls
+  AI Booking Engine
+  - Uses centralized bookingService
+  - Supports nearest time suggestion (Option B)
+  - Fully aligned with Booking schema
 */
 
 exports.createAIBooking = async (req, res) => {
   try {
-    const { partySize, startTime, customerName, callId } = req.body;
+    const {
+      partySize,
+      startTime,
+      customerName,
+      callId,
+      retellAgentId,
+      customerPhone,
+    } = req.body;
 
-    if (!partySize || !startTime || !customerName) {
-      return res.status(400).json({ error: "Missing required fields" });
+    /* ===============================
+       Validation
+    =============================== */
+
+    if (!partySize || !startTime || !customerName || !retellAgentId) {
+      return res.status(400).json({
+        error: "Missing required fields",
+      });
     }
 
-    const start = new Date(startTime);
+    const requestedStart = new Date(startTime);
 
-    if (isNaN(start.getTime())) {
-      return res.status(400).json({ error: "Invalid startTime" });
+    if (isNaN(requestedStart.getTime())) {
+      return res.status(400).json({
+        error: "Invalid startTime",
+      });
     }
 
-    // 🔥 Duration = 90 minutes (change later if needed)
-    const end = new Date(start.getTime() + 90 * 60000);
+    /* ===============================
+       Resolve Agent → Business
+    =============================== */
 
-    // Resolve agent → business
-    const agent = await Agent.findOne({ retellAgentId: req.body.retellAgentId });
+    const agent = await Agent.findOne({
+      retellAgentId,
+    });
+
     if (!agent) {
-      return res.status(400).json({ error: "Agent not found" });
+      return res.status(400).json({
+        error: "Agent not found",
+      });
     }
 
     const businessId = agent.businessId;
 
-    // 1️⃣ Get all active tables that can fit party
-    const tables = await Table.find({
+    /* ===============================
+       Attempt Booking (Option B)
+    =============================== */
+
+    const result = await findNearestAvailableSlot({
       businessId,
-      isActive: true,
-      capacity: { $gte: partySize },
-    }).sort({ capacity: 1 });
-
-    if (!tables.length) {
-      return res.status(400).json({ error: "No tables available" });
-    }
-
-    // 2️⃣ Find first available table (no time overlap)
-    let selectedTable = null;
-
-    for (const table of tables) {
-      const overlapping = await Booking.findOne({
-        tableId: table._id,
-        status: "confirmed",
-        $or: [
-          {
-            startTime: { $lt: end },
-            endTime: { $gt: start },
-          },
-        ],
-      });
-
-      if (!overlapping) {
-        selectedTable = table;
-        break;
-      }
-    }
-
-    if (!selectedTable) {
-      return res.status(400).json({ error: "No available tables at that time" });
-    }
-
-    // 3️⃣ Create booking
-    const booking = await Booking.create({
-      businessId,
-      tableId: selectedTable._id,
+      requestedStart,
+      durationMinutes: 90,
+      partySize: Number(partySize),
+      source: "ai",
       agentId: agent._id,
       callId: callId || null,
-      startTime: start,
-      endTime: end,
-      partySize,
       customerName,
-      customerPhone: req.body.customerPhone || null,
-      source: "ai",
-      status: "confirmed",
+      customerPhone: customerPhone || null,
+      notes: null,
+      searchWindowMinutes: 120,
     });
+
+    /* ===============================
+       Response Structure
+       (Retell Friendly)
+    =============================== */
+
+    if (result.success) {
+      return res.json({
+        success: true,
+        bookingId: result.booking._id,
+        startIso: result.booking.startIso,
+        endIso: result.booking.endIso,
+        message: "Booking confirmed",
+      });
+    }
+
+    if (result.suggestedTime) {
+      return res.json({
+        success: false,
+        suggestedTime: result.suggestedTime,
+        message: "Requested time unavailable. Suggested alternative.",
+      });
+    }
 
     return res.json({
-      success: true,
-      table: selectedTable.name,
-      bookingId: booking._id,
+      success: false,
+      suggestedTime: null,
+      message: "No available slots within search window.",
     });
-
   } catch (err) {
     console.error("❌ AI BOOKING ENGINE ERROR:", err);
-    return res.status(500).json({ error: "Booking failed" });
+
+    return res.status(500).json({
+      error: "Booking failed",
+    });
   }
 };

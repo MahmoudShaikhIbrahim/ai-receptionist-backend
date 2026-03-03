@@ -1,18 +1,22 @@
-// src/services/bookingService.js
-
 const Booking = require("../models/Booking");
 const Table = require("../models/Table");
 
-/**
- * Check time overlap
- */
-function overlaps(aStart, aEnd, bStart, bEnd) {
-  return aStart < bEnd && aEnd > bStart;
+/* =====================================================
+   Helpers
+===================================================== */
+
+function addMinutes(date, minutes) {
+  return new Date(date.getTime() + minutes * 60000);
 }
 
-/**
- * Core booking allocation + creation engine
- */
+function formatIso(date) {
+  return new Date(date).toISOString();
+}
+
+/* =====================================================
+   Core Allocation Logic (Existing)
+===================================================== */
+
 async function createBooking({
   businessId,
   startIso,
@@ -27,7 +31,6 @@ async function createBooking({
   floorId = null,
   zone = null,
 }) {
-  // 1️⃣ Get active tables
   const tableFilter = { businessId, isActive: true };
   if (floorId) tableFilter.floorId = floorId;
   if (zone) tableFilter.zone = zone;
@@ -35,7 +38,6 @@ async function createBooking({
   const tables = await Table.find(tableFilter).lean();
   if (!tables.length) return null;
 
-  // 2️⃣ Get blocking bookings
   const blockingBookings = await Booking.find({
     businessId,
     status: { $in: ["confirmed", "seated"] },
@@ -56,7 +58,6 @@ async function createBooking({
 
   if (!availableTables.length) return null;
 
-  // 3️⃣ Try single-table fit
   const singleFit = availableTables
     .filter((t) => t.capacity >= partySize)
     .sort((a, b) => a.capacity - b.capacity)[0];
@@ -68,7 +69,6 @@ async function createBooking({
       { tableId: singleFit._id, capacity: singleFit.capacity },
     ];
   } else {
-    // 4️⃣ Combination logic
     const sorted = [...availableTables].sort(
       (a, b) => a.capacity - b.capacity
     );
@@ -115,7 +115,6 @@ async function createBooking({
     }));
   }
 
-  // 5️⃣ Create booking
   const booking = await Booking.create({
     businessId,
     tables: selectedTables,
@@ -134,4 +133,100 @@ async function createBooking({
   return booking.toObject();
 }
 
-module.exports = { createBooking };
+/* =====================================================
+   Option B: Nearest Slot Search
+===================================================== */
+
+async function findNearestAvailableSlot({
+  businessId,
+  requestedStart,
+  durationMinutes = 90,
+  partySize,
+  source,
+  agentId,
+  callId,
+  customerName,
+  customerPhone,
+  notes,
+  searchWindowMinutes = 120,
+}) {
+  const requestedEnd = addMinutes(requestedStart, durationMinutes);
+
+  // 1️⃣ Try requested time first
+  const direct = await createBooking({
+    businessId,
+    startIso: requestedStart,
+    endIso: requestedEnd,
+    partySize,
+    source,
+    agentId,
+    callId,
+    customerName,
+    customerPhone,
+    notes,
+  });
+
+  if (direct) {
+    return { success: true, booking: direct };
+  }
+
+  // 2️⃣ Search nearest both directions
+  const step = 15;
+  const maxSteps = Math.floor(searchWindowMinutes / step);
+
+  for (let i = 1; i <= maxSteps; i++) {
+    const backwardStart = addMinutes(requestedStart, -step * i);
+    const backwardEnd = addMinutes(backwardStart, durationMinutes);
+
+    const forwardStart = addMinutes(requestedStart, step * i);
+    const forwardEnd = addMinutes(forwardStart, durationMinutes);
+
+    // Try backward first (closer earlier time)
+    const backAttempt = await createBooking({
+      businessId,
+      startIso: backwardStart,
+      endIso: backwardEnd,
+      partySize,
+      source,
+      agentId,
+      callId,
+      customerName,
+      customerPhone,
+      notes,
+    });
+
+    if (backAttempt) {
+      return {
+        success: false,
+        suggestedTime: formatIso(backwardStart),
+      };
+    }
+
+    const forwardAttempt = await createBooking({
+      businessId,
+      startIso: forwardStart,
+      endIso: forwardEnd,
+      partySize,
+      source,
+      agentId,
+      callId,
+      customerName,
+      customerPhone,
+      notes,
+    });
+
+    if (forwardAttempt) {
+      return {
+        success: false,
+        suggestedTime: formatIso(forwardStart),
+      };
+    }
+  }
+
+  return { success: false, suggestedTime: null };
+}
+
+module.exports = {
+  createBooking,
+  findNearestAvailableSlot,
+};
