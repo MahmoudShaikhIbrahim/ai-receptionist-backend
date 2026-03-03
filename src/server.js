@@ -17,17 +17,18 @@ const floorRoutes = require("./routes/floorRoutes");
 const tableRoutes = require("./routes/tableRoutes");
 const path = require("path");
 
-const { handleLLMWebSocket } = require("./ws/llmSocket"); // we will create this
+const { handleLLMWebSocket } = require("./ws/llmSocket");
 
 const app = express();
 const server = http.createServer(app);
 
 // =====================
-// CORS
+// CORS & Body Parsing
 // =====================
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
+// Connect to MongoDB
 connectDB();
 
 // =====================
@@ -51,8 +52,18 @@ app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 const wss = new WebSocket.Server({ server, path: "/llm/respond" });
 
 wss.on("connection", (ws, req) => {
-  console.log("🔌 Retell WebSocket connected");
-  handleLLMWebSocket(ws);
+  // Log connection details for debugging
+  const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+  console.log(`🔌 New WebSocket connection from ${clientIp} to path: ${req.url}`);
+
+  // Optional: You could add authorization or reject invalid connections here later
+
+  // Pass both ws and req to the handler (req useful for path/call_id in future)
+  handleLLMWebSocket(ws, req);
+});
+
+wss.on("error", (error) => {
+  console.error("WebSocket server error:", error);
 });
 
 // =====================
@@ -60,6 +71,8 @@ wss.on("connection", (ws, req) => {
 // =====================
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, () =>
-  console.log(`🚀 Server + WebSocket running on port ${PORT}`)
-);
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`WebSocket listening at wss://your-domain.up.railway.app/llm/respond`);
+  console.log("Ready for Retell Custom LLM connections");
+});
