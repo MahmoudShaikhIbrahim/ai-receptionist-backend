@@ -2,10 +2,13 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const http = require("http");
+const WebSocket = require("ws");
 
 const connectDB = require("./config/db");
 
 const retellWebhookRoutes = require("./routes/retellWebhookRoutes");
+const llmRoutes = require("./routes/llmRoutes");
 const authRoutes = require("./routes/authRoutes");
 const callRoutes = require("./routes/callRoutes");
 const businessRoutes = require("./routes/businessRoutes");
@@ -13,67 +16,50 @@ const bookingRoutes = require("./routes/bookingRoutes");
 const floorRoutes = require("./routes/floorRoutes");
 const tableRoutes = require("./routes/tableRoutes");
 const path = require("path");
-const llmRoutes = require("./routes/llmRoutes");
+
+const { handleLLMWebSocket } = require("./ws/llmSocket"); // we will create this
 
 const app = express();
+const server = http.createServer(app);
 
 // =====================
 // CORS
 // =====================
-const ALLOWED_ORIGINS = [
-  "http://localhost:5173",
-  "https://ai-receptionist-frontend-xi.vercel.app",
-];
-
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-      return cb(new Error(`CORS blocked origin: ${origin}`), false);
-    },
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
-
-// =====================
-// BODY PARSER (ONCE)
-// =====================
+app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// =====================
-// DB
-// =====================
 connectDB();
 
 // =====================
 // ROUTES
 // =====================
-app.get("/", (req, res) => res.send("AI Receptionist Backend is running"));
+app.get("/", (req, res) => res.send("AI Receptionist Backend Running"));
 
-// ✅ Retell webhook ONLY (NO Cal)
 app.use("/webhooks", retellWebhookRoutes);
-
-// ✅ Normal app routes
+app.use("/llm", llmRoutes);
 app.use("/auth", authRoutes);
 app.use("/calls", callRoutes);
 app.use("/business", businessRoutes);
 app.use("/bookings", bookingRoutes);
 app.use("/floors", floorRoutes);
 app.use("/tables", tableRoutes);
-app.use(
-  "/uploads",
-  express.static(path.join(__dirname, "../uploads"))
-);
-app.use("/llm", llmRoutes);
+app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
+
 // =====================
-// ERROR HANDLER
+// WEBSOCKET SERVER
 // =====================
-app.use((err, req, res, next) => {
-  console.error("SERVER ERROR:", err);
-  res.status(500).json({ error: err.message || "Server error" });
+const wss = new WebSocket.Server({ server, path: "/llm/respond" });
+
+wss.on("connection", (ws, req) => {
+  console.log("🔌 Retell WebSocket connected");
+  handleLLMWebSocket(ws);
 });
 
+// =====================
+// START SERVER
+// =====================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+server.listen(PORT, () =>
+  console.log(`🚀 Server + WebSocket running on port ${PORT}`)
+);
