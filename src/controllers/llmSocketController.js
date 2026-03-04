@@ -24,7 +24,10 @@ async function processLLMMessage(body) {
     return "";
   }
 
-  const transcript = Array.isArray(body.transcript) ? body.transcript : [];
+ const transcript =
+  Array.isArray(body.transcript) ? body.transcript :
+  Array.isArray(body.transcript_json) ? body.transcript_json :
+  [];
 
   // Convert Retell transcript → OpenAI messages
   const messages = [
