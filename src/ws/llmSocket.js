@@ -27,10 +27,17 @@ function handleLLMWebSocket(ws, req) {
       const interactionType = data.interaction_type;
 
       // Ignore events that do not require a reply
-      if (!["response_required", "reminder_required"].includes(interactionType)) {
-        console.log("Skipping event:", interactionType);
-        return;
-      }
+      // Ignore events that do not require a reply
+if (!["response_required", "reminder_required", "update"].includes(interactionType)) {
+  console.log("Skipping event:", interactionType);
+  return;
+}
+
+// Ignore partial speech updates
+if (interactionType === "update" && !data.is_final) {
+  console.log("Skipping partial update");
+  return;
+}
 
       // Extract latest user speech from transcript
       let latestUserText = "";
