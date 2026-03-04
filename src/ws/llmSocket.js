@@ -9,15 +9,11 @@ function handleLLMWebSocket(ws, req) {
   // Retell REQUIRES the server to send first
   // Use empty content → agent waits for user to speak first
   // Change content to a greeting if you want the agent to speak immediately
-  const initialResponse = {
-    response_id: 0,
-    content: "",  // ← change to "Welcome to our restaurant. How can I help you today?" if desired
-    content_complete: true,
-    end_call: false
-  };
+ 
 
-  ws.send(JSON.stringify(initialResponse));
-  console.log("Sent initial response to Retell:", JSON.stringify(initialResponse, null, 2));
+  // DO NOT send anything here
+  // Wait for Retell to send interaction_type events
+
 
   ws.on("message", async (rawMessage) => {
     const messageStr = rawMessage.toString();
@@ -35,7 +31,7 @@ function handleLLMWebSocket(ws, req) {
       }
 
       // Only respond to events that require a reply
-      if (interactionType !== "response_required" && interactionType !== "reminder_required") {
+      if (!["response_required", "reminder_required", "update"].includes(interactionType)) {
         console.log("Skipping event that doesn't require response:", interactionType);
         return;
       }
