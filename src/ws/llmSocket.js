@@ -13,7 +13,12 @@ function handleLLMWebSocket(ws, req) {
 
   // DO NOT send anything here
   // Wait for Retell to send interaction_type events
-
+ws.send(JSON.stringify({
+  response_id: 0,
+  content: "Hello! Welcome to our restaurant. How can i help you today?",
+  content_complete: true,
+  end_call: false
+}));
 
   ws.on("message", async (rawMessage) => {
     const messageStr = rawMessage.toString();
@@ -31,7 +36,8 @@ function handleLLMWebSocket(ws, req) {
       }
 
       // Only respond to events that require a reply
-      if (!["response_required", "reminder_required", "update"].includes(interactionType)) {
+      if (!["response_required", "reminder_required"].includes(interactionType)) {
+  
         console.log("Skipping event that doesn't require response:", interactionType);
         return;
       }
