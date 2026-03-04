@@ -1,17 +1,25 @@
 const OpenAI = require("openai");
 
-const client = new OpenAI({
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-async function getAIResponse(messages) {
-  const response = await client.chat.completions.create({
+async function getAIResponse(message) {
+  const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
-    temperature: 0.6,
-    messages
+    messages: [
+      {
+        role: "system",
+        content: "You are a friendly restaurant receptionist helping customers make reservations."
+      },
+      {
+        role: "user",
+        content: message
+      }
+    ]
   });
 
-  return response.choices[0].message.content;
+  return completion.choices[0].message.content;
 }
 
 module.exports = { getAIResponse };

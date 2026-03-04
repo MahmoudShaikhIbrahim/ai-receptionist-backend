@@ -13,21 +13,27 @@ async function processLLMMessage(body) {
 
   const type = body.type || body.interaction_type || "unknown";
 
-  // Ignore streaming updates
+  // Ignore ping / internal events
   if (type === "update_only" || type === "ping_pong") {
     return "";
   }
 
-  // Only respond when Retell explicitly asks
-  if (!["response_required", "reminder_required"].includes(type)) {
+  // Accept events that may contain user speech
+  if (!["response_required", "reminder_required", "update"].includes(type)) {
     console.log("Ignoring event:", type);
     return "";
   }
 
- const transcript =
-  Array.isArray(body.transcript) ? body.transcript :
-  Array.isArray(body.transcript_json) ? body.transcript_json :
-  [];
+  // Ignore partial speech updates
+  if (type === "update" && !body.is_final) {
+    console.log("Skipping partial update");
+    return "";
+  }
+
+  const transcript =
+    Array.isArray(body.transcript) ? body.transcript :
+    Array.isArray(body.transcript_json) ? body.transcript_json :
+    [];
 
   // Convert Retell transcript → OpenAI messages
   const messages = [
