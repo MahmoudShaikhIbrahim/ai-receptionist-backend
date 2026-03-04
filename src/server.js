@@ -54,8 +54,13 @@ const wss = new WebSocket.Server({ server });
 wss.on("connection", (ws, req) => {
   const url = req.url || "";
 
-  // Only allow Retell LLM connections
-  if (!url.startsWith("/llm/respond")) {
+  // Accept Retell dynamic websocket paths
+  const validPath =
+    url.startsWith("/llm/respond") ||
+    url.startsWith("/llm/call_") ||
+    url.startsWith("/llm/");
+
+  if (!validPath) {
     console.log("❌ Invalid WebSocket path:", url);
     ws.close();
     return;
@@ -83,6 +88,8 @@ const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`WebSocket listening at wss://your-domain.up.railway.app/llm/respond`);
+  console.log(
+    `WebSocket listening at wss://your-domain.up.railway.app/llm/respond`
+  );
   console.log("Ready for Retell Custom LLM connections");
 });
