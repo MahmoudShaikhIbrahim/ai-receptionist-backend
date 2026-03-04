@@ -28,14 +28,8 @@ function handleLLMWebSocket(ws, req) {
 
       // Ignore events that do not require a reply
       // Ignore events that do not require a reply
-if (!["response_required", "reminder_required", "update"].includes(interactionType)) {
+if (!["response_required", "reminder_required"].includes(interactionType)) {
   console.log("Skipping event:", interactionType);
-  return;
-}
-
-// Ignore partial speech updates
-if (interactionType === "update" && !data.is_final) {
-  console.log("Skipping partial update");
   return;
 }
 

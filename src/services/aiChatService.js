@@ -4,19 +4,12 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-async function getAIResponse(message) {
+async function getAIResponse(messages) {
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: "You are a friendly restaurant receptionist helping customers make reservations."
-      },
-      {
-        role: "user",
-        content: message
-      }
-    ]
+    messages: messages,
+    temperature: 0.4,
+    max_tokens: 120
   });
 
   return completion.choices[0].message.content;

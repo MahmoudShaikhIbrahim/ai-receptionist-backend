@@ -13,10 +13,6 @@ async function processLLMMessage(body) {
 
   const type = body.type || body.interaction_type || "unknown";
 
-  // Ignore ping / internal events
-  if (type === "update_only" || type === "ping_pong") {
-    return "";
-  }
 
   // Accept events that may contain user speech
   if (!["response_required", "reminder_required", "update"].includes(type)) {
