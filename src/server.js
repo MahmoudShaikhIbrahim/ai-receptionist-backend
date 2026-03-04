@@ -49,16 +49,26 @@ app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 // =====================
 // WEBSOCKET SERVER
 // =====================
-const wss = new WebSocket.Server({ server, path: "/llm/respond" });
+const wss = new WebSocket.Server({ server });
 
 wss.on("connection", (ws, req) => {
-  // Log connection details for debugging
-  const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
-  console.log(`🔌 New WebSocket connection from ${clientIp} to path: ${req.url}`);
+  const url = req.url || "";
 
-  // Optional: You could add authorization or reject invalid connections here later
+  // Only allow Retell LLM connections
+  if (!url.startsWith("/llm/respond")) {
+    console.log("❌ Invalid WebSocket path:", url);
+    ws.close();
+    return;
+  }
 
-  // Pass both ws and req to the handler (req useful for path/call_id in future)
+  const clientIp =
+    req.headers["x-forwarded-for"] ||
+    req.socket.remoteAddress ||
+    "unknown";
+
+  console.log(`🔌 Retell WebSocket connected from ${clientIp}`);
+  console.log(`Path: ${url}`);
+
   handleLLMWebSocket(ws, req);
 });
 
