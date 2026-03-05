@@ -6,50 +6,45 @@ const CallSession = require("../models/CallSession");
 const { nowInTZ } = require("../utils/time");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 const { DateTime } = require("luxon");
+
+
 const { getAIResponse } = require("../services/aiChatService");
 
 async function processLLMMessage(body) {
-  console.log("Processing WS body:", body);
+  console.log("Processing WS body:", JSON.stringify(body));
 
-  const type = body.type || body.interaction_type || "unknown";
+  const interactionType = body.interaction_type || body.type || "unknown";
 
-
-  // Accept events that may contain user speech
-  if (!["response_required", "reminder_required", "update"].includes(type)) {
-    console.log("Ignoring event:", type);
+  // Ignore ping events
+  if (interactionType === "ping_pong") {
     return "";
   }
 
-  // Ignore partial speech updates
-  if (type === "update" && !body.is_final) {
-    console.log("Skipping partial update");
-    return "";
-  }
-
+  // Extract transcript safely
   const transcript =
     Array.isArray(body.transcript) ? body.transcript :
     Array.isArray(body.transcript_json) ? body.transcript_json :
     [];
 
-  // Convert Retell transcript → OpenAI messages
   const messages = [
     {
       role: "system",
       content: `
 You are a friendly restaurant receptionist.
 
-You speak naturally like a human.
-You can respond to greetings, small talk, or questions.
+Speak naturally like a human.
 
-Your main goal is to help customers make reservations.
+You can respond to greetings and small talk.
 
-When a user wants to book a table, collect:
+Your goal is to help customers book tables.
+
+When a customer wants a reservation collect:
 - number of people
 - time
-- optionally their name
+- optionally name
 
 Ask only ONE question at a time.
-Never repeat the same question if the user already answered it.
+
 Keep responses short because this is a voice conversation.
 `
     }
@@ -73,17 +68,23 @@ Keep responses short because this is a voice conversation.
     }
   }
 
+  // If user hasn't spoken yet
+  const lastUser = transcript.find(t => t.role === "user");
+
+  if (!lastUser) {
+    return "Hello! Welcome to our restaurant. How can I help you today?";
+  }
+
   try {
     const aiReply = await getAIResponse(messages);
 
     console.log("AI reply:", aiReply);
 
-    return aiReply;
-
+    return aiReply || "Could you repeat that please?";
   } catch (err) {
     console.error("AI error:", err.message);
 
-    return "Sorry, I didn't catch that. Could you repeat that please?";
+    return "Sorry, could you repeat that please?";
   }
 }
 
