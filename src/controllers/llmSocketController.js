@@ -3,11 +3,11 @@
 const Business = require("../models/Business");
 const Agent = require("../models/Agent");
 const CallSession = require("../models/CallSession");
+
 const { nowInTZ } = require("../utils/time");
 const { findNearestAvailableSlot } = require("../services/bookingService");
+
 const { DateTime } = require("luxon");
-
-
 const { getAIResponse } = require("../services/aiChatService");
 
 async function processLLMMessage(body) {
@@ -22,9 +22,13 @@ async function processLLMMessage(body) {
 
   // Extract transcript safely
   const transcript =
-    Array.isArray(body.transcript) ? body.transcript :
-    Array.isArray(body.transcript_json) ? body.transcript_json :
-    [];
+    Array.isArray(body.transcript)
+      ? body.transcript
+      : Array.isArray(body.transcript_json)
+      ? body.transcript_json
+      : [];
+
+  console.log("Transcript length:", transcript.length);
 
   const messages = [
     {
@@ -36,31 +40,38 @@ Speak naturally like a human.
 
 You can respond to greetings and small talk.
 
-Your goal is to help customers book tables.
+Your main goal is to help customers make reservations.
 
-When a customer wants a reservation collect:
+When a customer wants to book a table collect:
 - number of people
 - time
 - optionally name
 
 Ask only ONE question at a time.
 
+Do NOT repeat the same question if it was already answered.
+
 Keep responses short because this is a voice conversation.
 `
     }
   ];
 
+  // Convert Retell transcript → OpenAI messages
   for (const item of transcript) {
     if (!item || typeof item.content !== "string") continue;
 
-    if (item.role === "user") {
+    const role = item.role;
+
+    // User speech
+    if (role === "user" || role === "caller") {
       messages.push({
         role: "user",
         content: item.content.trim()
       });
     }
 
-    if (item.role === "agent") {
+    // Assistant speech
+    if (role === "assistant" || role === "agent") {
       messages.push({
         role: "assistant",
         content: item.content.trim()
@@ -68,10 +79,15 @@ Keep responses short because this is a voice conversation.
     }
   }
 
-  // If user hasn't spoken yet
-  const lastUser = transcript.find(t => t.role === "user");
+  console.log("Messages sent to AI:", messages);
+
+  // Detect if user has spoken
+  const lastUser = transcript.find(
+    (t) => t.role === "user" || t.role === "caller"
+  );
 
   if (!lastUser) {
+    console.log("No user speech detected yet");
     return "Hello! Welcome to our restaurant. How can I help you today?";
   }
 
@@ -80,7 +96,11 @@ Keep responses short because this is a voice conversation.
 
     console.log("AI reply:", aiReply);
 
-    return aiReply || "Could you repeat that please?";
+    if (!aiReply || aiReply.trim() === "") {
+      return "Could you please repeat that?";
+    }
+
+    return aiReply;
   } catch (err) {
     console.error("AI error:", err.message);
 

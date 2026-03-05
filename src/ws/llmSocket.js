@@ -1,3 +1,5 @@
+// src/ws/llmSocket.js
+
 const { processLLMMessage } = require("../controllers/llmSocketController");
 
 function handleLLMWebSocket(ws, req) {
@@ -26,12 +28,11 @@ function handleLLMWebSocket(ws, req) {
       const data = JSON.parse(messageStr);
       const interactionType = data.interaction_type;
 
-      // Ignore events that do not require a reply
-      // Ignore events that do not require a reply
-if (!["response_required", "reminder_required"].includes(interactionType)) {
-  console.log("Skipping event:", interactionType);
-  return;
-}
+      // Only respond when Retell expects a reply
+      if (!["response_required", "reminder_required", "update"].includes(interactionType)) {
+        console.log("Skipping event:", interactionType);
+        return;
+      }
 
       // Extract latest user speech from transcript
       let latestUserText = "";
@@ -41,7 +42,7 @@ if (!["response_required", "reminder_required"].includes(interactionType)) {
           const utterance = data.transcript[i];
 
           if (
-            utterance?.role === "user" &&
+            (utterance?.role === "user" || utterance?.role === "caller") &&
             typeof utterance.content === "string"
           ) {
             latestUserText = utterance.content.trim();
@@ -50,7 +51,7 @@ if (!["response_required", "reminder_required"].includes(interactionType)) {
         }
       }
 
-      console.log("Latest user text:", latestUserText || "(none)");
+      console.log("🗣 Latest user text:", latestUserText || "(none)");
 
       // Ask controller to generate AI reply
       let responseText = await processLLMMessage({
@@ -58,9 +59,9 @@ if (!["response_required", "reminder_required"].includes(interactionType)) {
         latest_user_text: latestUserText
       });
 
-      // Minimal fallback (only if AI fails)
-      if (!responseText) {
-        responseText = "Could you please repeat that?";
+      // Only fallback if controller returned nothing
+      if (!responseText || responseText.trim() === "") {
+        responseText = "I'm sorry, could you repeat that please?";
       }
 
       const payload = {
@@ -70,7 +71,7 @@ if (!["response_required", "reminder_required"].includes(interactionType)) {
         content_complete: true,
         end_call: false
       };
-
+ 
       ws.send(JSON.stringify(payload));
       console.log("📤 Sent response to Retell:", payload.content);
     } catch (err) {
