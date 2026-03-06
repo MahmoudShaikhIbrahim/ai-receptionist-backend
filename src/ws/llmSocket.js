@@ -29,7 +29,7 @@ function handleLLMWebSocket(ws, req) {
       const interactionType = data.interaction_type;
 
       // Only respond when Retell expects a reply
-      if (!["response_required", "reminder_required", "update"].includes(interactionType)) {
+      if (!["response_required", "reminder_required"].includes(interactionType)) {
         console.log("Skipping event:", interactionType);
         return;
       }
@@ -54,16 +54,16 @@ function handleLLMWebSocket(ws, req) {
       console.log("🗣 Latest user text:", latestUserText || "(none)");
 
       // Ask controller to generate AI reply
-      let responseText = await processLLMMessage({
-        ...data,
-        latest_user_text: latestUserText
-      });
+      const result = await processLLMMessage({
+  ...data,
+  latest_user_text: latestUserText
+});
 
-      // Only fallback if controller returned nothing
-      if (!responseText || responseText.trim() === "") {
-        responseText = "I'm sorry, could you repeat that please?";
-      }
+let responseText = result?.response;
 
+if (typeof responseText !== "string" || responseText.trim() === "") {
+  responseText = "I'm sorry, could you repeat that please?";
+}
       const payload = {
         response_id:
           data.response_id !== undefined ? data.response_id : 0,
