@@ -84,7 +84,7 @@ Keep responses short.
 
     console.log("AI reply:", aiReply);
 
-    if (!aiReply || aiReply.trim() === "") {
+    if (typeof aiReply !== "string" || aiReply.trim() === "") {
       return {
         response: "Could you repeat that please?"
       };
