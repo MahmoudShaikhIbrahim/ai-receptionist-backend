@@ -1,5 +1,3 @@
-// src/controllers/llmSocketController.js
-
 const Business = require("../models/Business");
 const Agent = require("../models/Agent");
 const CallSession = require("../models/CallSession");
@@ -11,16 +9,22 @@ const { DateTime } = require("luxon");
 const { getAIResponse } = require("../services/aiChatService");
 
 async function processLLMMessage(body) {
+
   console.log("Processing WS body:", JSON.stringify(body));
 
   const interactionType = body.interaction_type || body.type || "unknown";
 
   // Ignore ping events
   if (interactionType === "ping_pong") {
-    return "";
+    return null;
   }
 
-  // Extract transcript safely
+  // IMPORTANT: only respond when Retell asks for a response
+  if (interactionType !== "response_required") {
+    console.log("Skipping event:", interactionType);
+    return null;
+  }
+
   const transcript =
     Array.isArray(body.transcript)
       ? body.transcript
@@ -38,40 +42,33 @@ You are a friendly restaurant receptionist.
 
 Speak naturally like a human.
 
-You can respond to greetings and small talk.
+Your job is to help customers book tables.
 
-Your main goal is to help customers make reservations.
-
-When a customer wants to book a table collect:
+Collect:
 - number of people
 - time
-- optionally name
+- name
 
 Ask only ONE question at a time.
 
-Do NOT repeat the same question if it was already answered.
+Do not repeat questions already answered.
 
-Keep responses short because this is a voice conversation.
+Keep responses short.
 `
     }
   ];
 
-  // Convert Retell transcript → OpenAI messages
   for (const item of transcript) {
     if (!item || typeof item.content !== "string") continue;
 
-    const role = item.role;
-
-    // User speech
-    if (role === "user" || role === "caller") {
+    if (item.role === "user" || item.role === "caller") {
       messages.push({
         role: "user",
         content: item.content.trim()
       });
     }
 
-    // Assistant speech
-    if (role === "assistant" || role === "agent") {
+    if (item.role === "assistant" || item.role === "agent") {
       messages.push({
         role: "assistant",
         content: item.content.trim()
@@ -81,30 +78,30 @@ Keep responses short because this is a voice conversation.
 
   console.log("Messages sent to AI:", messages);
 
-  // Detect if user has spoken
-  const lastUser = transcript.find(
-    (t) => t.role === "user" || t.role === "caller"
-  );
-
-  if (!lastUser) {
-    console.log("No user speech detected yet");
-    return "Hello! Welcome to our restaurant. How can I help you today?";
-  }
-
   try {
+
     const aiReply = await getAIResponse(messages);
 
     console.log("AI reply:", aiReply);
 
     if (!aiReply || aiReply.trim() === "") {
-      return "Could you please repeat that?";
+      return {
+        response: "Could you repeat that please?"
+      };
     }
 
-    return aiReply;
+    return {
+      response: aiReply
+    };
+
   } catch (err) {
+
     console.error("AI error:", err.message);
 
-    return "Sorry, could you repeat that please?";
+    return {
+      response: "Sorry, could you repeat that please?"
+    };
+
   }
 }
 
