@@ -18,7 +18,7 @@ function pick(obj, keys) {
 ====================== */
 
 function normalizeRetellCall(payload) {
-  const candidate =
+  const call =
     payload?.call ||
     payload?.data?.call ||
     payload?.payload?.call ||
@@ -26,13 +26,28 @@ function normalizeRetellCall(payload) {
     payload?.payload ||
     payload;
 
-  const callId = pick(candidate, ["call_id", "callId", "id"]);
-  const agentId = pick(candidate, ["agent_id", "agentId"]);
+  const callId =
+    call?.call_id ||
+    call?.callId ||
+    call?.id ||
+    payload?.call_id ||
+    payload?.id ||
+    null;
 
-  if (!callId || !agentId) return null;
+  const agentId =
+    call?.agent_id ||
+    call?.agentId ||
+    payload?.agent_id ||
+    payload?.agentId ||
+    null;
+
+  if (!callId || !agentId) {
+    console.warn("⚠️ Unable to resolve callId or agentId");
+    return null;
+  }
 
   return {
-    ...candidate,
+    ...call,
     call_id: callId,
     agent_id: agentId,
   };
