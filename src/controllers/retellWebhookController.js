@@ -22,8 +22,8 @@ function normalizeRetellCall(payload) {
     payload?.call ||
     payload?.data?.call ||
     payload?.payload?.call ||
+    payload?.data?.payload?.call ||
     payload?.data ||
-    payload?.payload ||
     payload;
 
   const callId =
@@ -42,14 +42,14 @@ function normalizeRetellCall(payload) {
     null;
 
   if (!callId || !agentId) {
-    console.warn("⚠️ Unable to resolve callId or agentId");
+    console.warn("⚠️ Could not extract callId or agentId");
     return null;
   }
 
   return {
     ...call,
     call_id: callId,
-    agent_id: agentId,
+    agent_id: agentId
   };
 }
 
@@ -59,7 +59,7 @@ function normalizeRetellCall(payload) {
 
 exports.handleRetellWebhook = async (req, res) => {
   try {
-    console.log("🔥 RETELL RAW BODY:", JSON.stringify(req.body, null, 2));
+    console.log("📩 RETELL EVENT:", req.body?.event);
 
     const call = normalizeRetellCall(req.body);
     if (!call) {
