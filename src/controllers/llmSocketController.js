@@ -84,6 +84,63 @@ Keep responses short.
 
     console.log("AI reply:", aiReply);
 
+    /* =====================================================
+       SIMPLE BOOKING EXTRACTION
+       (temporary logic until structured output)
+    ===================================================== */
+
+    const lastUser = transcript
+      .filter(t => t.role === "user" || t.role === "caller")
+      .pop();
+
+    if (lastUser && typeof lastUser.content === "string") {
+
+      const text = lastUser.content.toLowerCase();
+
+      const partyMatch = text.match(/\b(\d+)\b/);
+      const timeMatch = text.match(/\b(\d{1,2})(?::(\d{2}))?\s?(am|pm)?\b/i);
+
+      if (partyMatch && timeMatch) {
+
+        console.log("Booking intent detected");
+
+        const partySize = parseInt(partyMatch[1], 10);
+
+        let hour = parseInt(timeMatch[1], 10);
+        const minute = parseInt(timeMatch[2] || "0", 10);
+
+        if (timeMatch[3]?.toLowerCase() === "pm" && hour < 12) {
+          hour += 12;
+        }
+
+        const requestedStart = new Date();
+        requestedStart.setHours(hour);
+        requestedStart.setMinutes(minute);
+        requestedStart.setSeconds(0);
+        requestedStart.setMilliseconds(0);
+
+        try {
+
+          const bookingResult = await findNearestAvailableSlot({
+            businessId: body.business_id || null,
+            requestedStart,
+            partySize,
+            source: "phone_ai",
+            agentId: body.agent_id || null,
+            callId: body.call_id || null,
+            customerName: "Phone Guest"
+          });
+
+          console.log("Booking result:", bookingResult);
+
+        } catch (bookingError) {
+          console.error("Booking engine error:", bookingError.message);
+        }
+
+      }
+
+    }
+
     if (typeof aiReply !== "string" || aiReply.trim() === "") {
       return {
         response: "Could you repeat that please?"
