@@ -1,81 +1,116 @@
-// src/controllers/retellWebhookController.js
-
 const Agent = require("../models/Agent");
 const Call = require("../models/Call");
 
+/* ======================
+   UTILITIES
+====================== */
+
+function pick(obj, keys) {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
+  return null;
+}
+
+/* ======================
+   RETELL NORMALIZER
+====================== */
+
+function normalizeRetellCall(payload) {
+  const candidate =
+    payload?.call ||
+    payload?.data?.call ||
+    payload?.payload?.call ||
+    payload?.data ||
+    payload?.payload ||
+    payload;
+
+  const callId = pick(candidate, ["call_id", "callId", "id"]);
+  const agentId = pick(candidate, ["agent_id", "agentId"]);
+
+  if (!callId || !agentId) return null;
+
+  return {
+    ...candidate,
+    call_id: callId,
+    agent_id: agentId,
+  };
+}
+
+/* ======================
+   RETELL WEBHOOK HANDLER
+====================== */
+
 exports.handleRetellWebhook = async (req, res) => {
   try {
-    const payload = req.body;
-    const event = payload.event;
+    console.log("🔥 RETELL RAW BODY:", JSON.stringify(req.body, null, 2));
 
-    console.log("📞 RETELL EVENT RECEIVED:", event);
-
-    // We ONLY persist on final events
-   const allowedEvents = [
-  "call_ended",
-  "call_completed",
-  "call_analyzed",
-  "post_call",
-  "call.ended",
-  "call.completed",
-  "call.analyzed"
-];
-
-if (!allowedEvents.includes(event)) {
-  return res.status(200).json({ ignored: true });
-}
-    const callId = payload.call_id || payload.call?.id;
-    const retellAgentId = payload.agent_id || payload.call?.agent_id;
-
-    if (!callId || !retellAgentId) {
-      console.warn("⚠️ Missing callId or retellAgentId");
+    const call = normalizeRetellCall(req.body);
+    if (!call) {
       return res.status(200).json({ ignored: true });
     }
 
-    // Resolve agent
+    const retellAgentId = call.agent_id;
+    const callId = call.call_id;
+
     const agent = await Agent.findOne({ retellAgentId });
     if (!agent) {
-      console.warn("⚠️ No agent mapped to retellAgentId:", retellAgentId);
+      console.warn("⚠️ No agent found for retellAgentId:", retellAgentId);
       return res.status(200).json({ ignored: true });
     }
 
-    // Persist call (idempotent)
     await Call.findOneAndUpdate(
       { callId },
+
       {
-        callId,
-        retellAgentId,
-        agentId: agent._id,
-        businessId: agent.businessId,
+        // ✅ REQUIRED FIELDS AT CREATION TIME
+        $setOnInsert: {
+          callId,
+          businessId: agent.businessId,
+          agentId: agent._id,
+          retellAgentId,
+        },
 
-        callerNumber: payload.from || null,
-        calleeNumber: payload.to || null,
+        // ✅ UPDATABLE FIELDS
+        $set: {
+          callerNumber:
+            pick(call, ["from", "caller_number", "callerNumber"]) || null,
 
-        transcript: payload.transcript || payload.call?.transcript || null,
-        summary: payload.summary || null,
+          calleeNumber:
+            pick(call, ["to", "callee_number", "calleeNumber"]) || null,
 
-        startedAt: payload.started_at
-          ? new Date(payload.started_at)
-          : payload.call?.started_at
-          ? new Date(payload.call.started_at)
-          : null,
+          intent: pick(call, ["intent"]) || "unknown",
 
-        endedAt: payload.ended_at
-          ? new Date(payload.ended_at)
-          : payload.call?.ended_at
-          ? new Date(payload.call.ended_at)
-          : null,
+          summary: pick(call, ["call_analysis"])?.call_summary || null,
+          transcript: pick(call, ["transcript"]) || null,
 
-        durationSeconds: payload.duration || payload.call?.duration || null,
+          startedAt: pick(call, ["start_timestamp", "startTimestamp"])
+            ? new Date(pick(call, ["start_timestamp", "startTimestamp"]))
+            : undefined,
+
+          endedAt: pick(call, ["end_timestamp", "endTimestamp"])
+            ? new Date(pick(call, ["end_timestamp", "endTimestamp"]))
+            : undefined,
+
+          durationSeconds: pick(call, ["duration_ms", "durationMs"])
+            ? Math.round(
+                Number(pick(call, ["duration_ms", "durationMs"])) / 1000
+              )
+            : undefined,
+        },
       },
-      { upsert: true, new: true }
+
+      {
+        upsert: true,
+        new: true,
+      }
     );
 
-    console.log("✅ CALL SAVED:", callId);
-
+    console.log("✅ RETELL CALL SAVED:", callId);
     return res.status(200).json({ received: true });
   } catch (err) {
     console.error("❌ RETELL WEBHOOK ERROR:", err);
-    return res.status(500).json({ error: "internal_error" });
+    return res.status(500).json({ error: "Webhook failed" });
   }
 };
