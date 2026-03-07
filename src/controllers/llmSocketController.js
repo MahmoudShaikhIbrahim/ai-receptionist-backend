@@ -121,15 +121,25 @@ Keep responses short.
 
         try {
 
-          const bookingResult = await findNearestAvailableSlot({
-            businessId: body.business_id || null,
-            requestedStart,
-            partySize,
-            source: "phone_ai",
-            agentId: body.agent_id || null,
-            callId: body.call_id || null,
-            customerName: "Phone Guest"
-          });
+          const retellAgentId = body.agent_id;
+const callId = body.call_id;
+
+const agent = await Agent.findOne({ retellAgentId });
+
+if (!agent) {
+  console.warn("Agent not found for retellAgentId:", retellAgentId);
+  return { response: aiReply };
+}
+
+const bookingResult = await findNearestAvailableSlot({
+  businessId: agent.businessId,
+  requestedStart,
+  partySize,
+  source: "phone_ai",
+  agentId: agent._id,
+  callId,
+  customerName: "Phone Guest"
+});
 
           console.log("Booking result:", bookingResult);
 
