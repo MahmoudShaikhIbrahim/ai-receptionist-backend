@@ -11,10 +11,19 @@ exports.handleRetellWebhook = async (req, res) => {
     console.log("📞 RETELL EVENT RECEIVED:", event);
 
     // We ONLY persist on final events
-    if (!["call.ended", "call.completed", "post_call", "call.analyzed"].includes(event)) {
-      return res.status(200).json({ ignored: true });
-    }
+   const allowedEvents = [
+  "call_ended",
+  "call_completed",
+  "call_analyzed",
+  "post_call",
+  "call.ended",
+  "call.completed",
+  "call.analyzed"
+];
 
+if (!allowedEvents.includes(event)) {
+  return res.status(200).json({ ignored: true });
+}
     const callId = payload.call_id || payload.call?.id;
     const retellAgentId = payload.agent_id || payload.call?.agent_id;
 
