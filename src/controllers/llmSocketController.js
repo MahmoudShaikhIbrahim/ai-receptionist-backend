@@ -69,8 +69,8 @@ Keep responses short.
 
     const text = lastUser.content.toLowerCase();
 
-    const partyMatch = text.match(/\b(\d+)\b/);
-    const timeMatch = text.match(/\b(\d{1,2})(?::(\d{2}))?\s?(am|pm)?\b/i);
+    const partyMatch = text.match(/\b(\d+)\s*(people|persons|guests)?\b/i);
+    const timeMatch = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
 
     if (partyMatch && timeMatch) {
 
