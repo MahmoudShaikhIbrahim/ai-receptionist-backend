@@ -6,6 +6,7 @@ const { findNearestAvailableSlot } = require("../services/bookingService");
 
 async function processLLMMessage(body) {
 
+  console.log("WEBSOCKET LLM CONTROLLER HIT");
   console.log("Processing WS body:", JSON.stringify(body));
 
   const interactionType = body.interaction_type || body.type || "unknown";

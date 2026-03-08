@@ -302,6 +302,7 @@ function getLatestUserText(body) {
 /* ================= MAIN ================= */
 
 exports.respond = async (req, res) => {
+  console.log("HTTP LLM CONTROLLER HIT");
   console.log("LLM CONTROLLER HIT");
 
   try {
