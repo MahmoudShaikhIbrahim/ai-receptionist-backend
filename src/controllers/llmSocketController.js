@@ -2,7 +2,7 @@ const Agent = require("../models/Agent");
 const Call = require("../models/Call");
 
 const { getAIResponse } = require("../services/aiChatService");
-const { createAIBooking } = require("./bookingEngineController");
+const { findNearestAvailableSlot } = require("../services/bookingService");
 
 async function processLLMMessage(body) {
 
@@ -118,18 +118,19 @@ Keep responses short.
 
       try {
 
-        const result = await createAIBooking({
-          body: {
-            partySize,
-            startTime: requestedStart,
-            customerName: "Phone Guest",
-            callId,
-            retellAgentId: agent.retellAgentId
-          }
-        }, {
-          json: (data) => data,
-          status: () => ({ json: (data) => data })
-        });
+      const result = await findNearestAvailableSlot({
+  businessId: agent.businessId,
+  requestedStart,
+  durationMinutes: 90,
+  partySize,
+  source: "ai",
+  agentId: agent._id,
+  callId,
+  customerName: "Phone Guest",
+  customerPhone: null,
+  notes: null,
+  searchWindowMinutes: 120
+});
 
         console.log("AI booking engine result:", result);
 
