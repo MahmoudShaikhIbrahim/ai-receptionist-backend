@@ -31,12 +31,30 @@ async function createBooking({
   floorId = null,
   zone = null,
 }) {
+  console.log("🔎 createBooking called with:", {
+    businessId: String(businessId),
+    startIso,
+    endIso,
+    partySize,
+    source,
+    agentId: agentId ? String(agentId) : null,
+    callId,
+    customerName,
+    floorId: floorId ? String(floorId) : null,
+    zone,
+  });
+
   const tableFilter = { businessId, isActive: true };
   if (floorId) tableFilter.floorId = floorId;
   if (zone) tableFilter.zone = zone;
 
   const tables = await Table.find(tableFilter).lean();
-  if (!tables.length) return null;
+  console.log("🪑 tables found:", tables.length);
+
+  if (!tables.length) {
+    console.log("❌ No active tables found for business");
+    return null;
+  }
 
   const blockingBookings = await Booking.find({
     businessId,
@@ -44,6 +62,8 @@ async function createBooking({
     startIso: { $lt: endIso },
     endIso: { $gt: startIso },
   }).lean();
+
+  console.log("⛔ blocking bookings found:", blockingBookings.length);
 
   const blockedTableIds = new Set();
   for (const booking of blockingBookings) {
@@ -56,7 +76,12 @@ async function createBooking({
     (t) => !blockedTableIds.has(String(t._id))
   );
 
-  if (!availableTables.length) return null;
+  console.log("✅ available tables:", availableTables.length);
+
+  if (!availableTables.length) {
+    console.log("❌ No available tables after conflict filtering");
+    return null;
+  }
 
   const singleFit = availableTables
     .filter((t) => t.capacity >= partySize)
@@ -68,6 +93,10 @@ async function createBooking({
     selectedTables = [
       { tableId: singleFit._id, capacity: singleFit.capacity },
     ];
+    console.log("🎯 single table fit found:", {
+      tableId: String(singleFit._id),
+      capacity: singleFit.capacity,
+    });
   } else {
     const sorted = [...availableTables].sort(
       (a, b) => a.capacity - b.capacity
@@ -94,7 +123,12 @@ async function createBooking({
 
     backtrack(0, [], 0);
 
-    if (!combinations.length) return null;
+    console.log("🧮 combinations found:", combinations.length);
+
+    if (!combinations.length) {
+      console.log("❌ No table combination can satisfy party size");
+      return null;
+    }
 
     combinations.sort((a, b) => {
       if (a.length !== b.length) return a.length - b.length;
@@ -113,24 +147,38 @@ async function createBooking({
       tableId: t._id,
       capacity: t.capacity,
     }));
+
+    console.log(
+      "🎯 combination selected:",
+      selectedTables.map((t) => ({
+        tableId: String(t.tableId),
+        capacity: t.capacity,
+      }))
+    );
   }
 
-  const booking = await Booking.create({
-    businessId,
-    tables: selectedTables,
-    agentId,
-    callId,
-    startIso,
-    endIso,
-    partySize,
-    customerName,
-    customerPhone,
-    notes,
-    source,
-    status: "confirmed",
-  });
+  try {
+    const booking = await Booking.create({
+      businessId,
+      tables: selectedTables,
+      agentId,
+      callId,
+      startIso,
+      endIso,
+      partySize,
+      customerName,
+      customerPhone,
+      notes,
+      source,
+      status: "confirmed",
+    });
 
-  return booking.toObject();
+    console.log("✅ Booking created:", String(booking._id));
+    return booking.toObject();
+  } catch (err) {
+    console.error("❌ Booking.create failed:", err);
+    throw err;
+  }
 }
 
 /* =====================================================
@@ -150,9 +198,20 @@ async function findNearestAvailableSlot({
   notes,
   searchWindowMinutes = 120,
 }) {
+  console.log("🚀 findNearestAvailableSlot called with:", {
+    businessId: String(businessId),
+    requestedStart,
+    durationMinutes,
+    partySize,
+    source,
+    agentId: agentId ? String(agentId) : null,
+    callId,
+    customerName,
+    searchWindowMinutes,
+  });
+
   const requestedEnd = addMinutes(requestedStart, durationMinutes);
 
-  // 1️⃣ Try requested time first
   const direct = await createBooking({
     businessId,
     startIso: requestedStart,
@@ -167,10 +226,10 @@ async function findNearestAvailableSlot({
   });
 
   if (direct) {
+    console.log("✅ Direct booking success");
     return { success: true, booking: direct };
   }
 
-  // 2️⃣ Search nearest both directions
   const step = 15;
   const maxSteps = Math.floor(searchWindowMinutes / step);
 
@@ -181,7 +240,6 @@ async function findNearestAvailableSlot({
     const forwardStart = addMinutes(requestedStart, step * i);
     const forwardEnd = addMinutes(forwardStart, durationMinutes);
 
-    // Try backward first (closer earlier time)
     const backAttempt = await createBooking({
       businessId,
       startIso: backwardStart,
@@ -196,6 +254,7 @@ async function findNearestAvailableSlot({
     });
 
     if (backAttempt) {
+      console.log("🕒 Suggested earlier time:", backwardStart);
       return {
         success: false,
         suggestedTime: formatIso(backwardStart),
@@ -216,6 +275,7 @@ async function findNearestAvailableSlot({
     });
 
     if (forwardAttempt) {
+      console.log("🕒 Suggested later time:", forwardStart);
       return {
         success: false,
         suggestedTime: formatIso(forwardStart),
@@ -223,6 +283,7 @@ async function findNearestAvailableSlot({
     }
   }
 
+  console.log("❌ No slot found in search window");
   return { success: false, suggestedTime: null };
 }
 
