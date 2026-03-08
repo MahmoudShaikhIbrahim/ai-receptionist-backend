@@ -1,9 +1,5 @@
-const Business = require("../models/Business");
 const Agent = require("../models/Agent");
-const CallSession = require("../models/CallSession");
-
-const { nowInTZ } = require("../utils/time");
-const { DateTime } = require("luxon");
+const Call = require("../models/Call");
 
 const { getAIResponse } = require("../services/aiChatService");
 const { createAIBooking } = require("./bookingEngineController");
@@ -16,10 +12,10 @@ async function processLLMMessage(body) {
 
   if (interactionType === "ping_pong") return null;
 
- if (!["response_required", "update_only"].includes(interactionType)) {
-  console.log("Skipping event:", interactionType);
-  return null;
-}
+  if (!["response_required", "update_only"].includes(interactionType)) {
+    console.log("Skipping event:", interactionType);
+    return null;
+  }
 
   const transcript =
     Array.isArray(body.transcript)
@@ -95,8 +91,30 @@ Keep responses short.
       requestedStart.setSeconds(0);
       requestedStart.setMilliseconds(0);
 
-      const retellAgentId = body.agent_id;
       const callId = body.call_id;
+
+      if (!callId) {
+        console.warn("No callId received in WS payload");
+        return { response: aiReply };
+      }
+
+      /* ===============================
+         Resolve Agent via Call
+      =============================== */
+
+      const call = await Call.findOne({ callId });
+
+      if (!call) {
+        console.warn("Call not found:", callId);
+        return { response: aiReply };
+      }
+
+      const agent = await Agent.findById(call.agentId);
+
+      if (!agent) {
+        console.warn("Agent not found:", call.agentId);
+        return { response: aiReply };
+      }
 
       try {
 
@@ -106,7 +124,7 @@ Keep responses short.
             startTime: requestedStart,
             customerName: "Phone Guest",
             callId,
-            retellAgentId
+            retellAgentId: agent.retellAgentId
           }
         }, {
           json: (data) => data,
