@@ -3,10 +3,11 @@ const Agent = require("../models/Agent");
 const CallSession = require("../models/CallSession");
 
 const { nowInTZ } = require("../utils/time");
-const { findNearestAvailableSlot } = require("../services/bookingService");
-
 const { DateTime } = require("luxon");
+
 const { getAIResponse } = require("../services/aiChatService");
+const { createAIBooking } = require("./bookingEngineController");
+
 async function processLLMMessage(body) {
 
   console.log("Processing WS body:", JSON.stringify(body));
@@ -97,37 +98,30 @@ Keep responses short.
       const retellAgentId = body.agent_id;
       const callId = body.call_id;
 
-      const agent = await Agent.findOne({ retellAgentId });
-
-      if (!agent) {
-        console.warn("Agent not found for retellAgentId:", retellAgentId);
-        return { response: aiReply };
-      }
-
-      console.log("Agent resolved:", agent._id);
-      console.log("Business:", agent.businessId);
-
       try {
 
-        const bookingResult = await findNearestAvailableSlot({
-          businessId: agent.businessId,
-          requestedStart,
-          partySize,
-          source: "phone_ai",
-          agentId: agent._id,
-          callId,
-          customerName: "Phone Guest"
+        const result = await createAIBooking({
+          body: {
+            partySize,
+            startTime: requestedStart,
+            customerName: "Phone Guest",
+            callId,
+            retellAgentId
+          }
+        }, {
+          json: (data) => data,
+          status: () => ({ json: (data) => data })
         });
 
-        console.log("Booking engine result:", bookingResult);
+        console.log("AI booking engine result:", result);
 
-        if (bookingResult?.success) {
+        if (result?.success) {
           return { response: "Perfect. Your table is confirmed." };
         }
 
-        if (bookingResult?.suggestedTime) {
+        if (result?.suggestedTime) {
           return {
-            response: `We are full at that time. Would ${bookingResult.suggestedTime} work for you?`
+            response: `We are full at that time. Would ${result.suggestedTime} work instead?`
           };
         }
 
