@@ -1,6 +1,6 @@
 const Agent = require("../models/Agent");
 const Call = require("../models/Call");
-
+const { wordsToNumbers } = require("words-to-numbers");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
@@ -68,7 +68,8 @@ Keep responses short.
       return { response: aiReply };
     }
 
-    const text = lastUser.content.toLowerCase();
+    const rawText = lastUser.content.toLowerCase();
+    const text = wordsToNumbers(rawText);
 
     const partyMatch = text.match(/\b(\d+)\s*(people|persons|guests)?\b/i);
     const timeMatch = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
