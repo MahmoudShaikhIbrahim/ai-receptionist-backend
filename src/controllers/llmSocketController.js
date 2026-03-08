@@ -16,10 +16,10 @@ async function processLLMMessage(body) {
 
   if (interactionType === "ping_pong") return null;
 
-  if (interactionType !== "response_required") {
-    console.log("Skipping event:", interactionType);
-    return null;
-  }
+ if (!["response_required", "update_only"].includes(interactionType)) {
+  console.log("Skipping event:", interactionType);
+  return null;
+}
 
   const transcript =
     Array.isArray(body.transcript)
