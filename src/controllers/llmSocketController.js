@@ -13,13 +13,47 @@ function normalizeText(value) {
 function extractPartySizeFromText(text) {
   if (!text) return null;
 
-  const match = text.match(/\b(\d+)\s*(people|persons|guests|guest|person|pax)?\b/i);
-  if (!match) return null;
+  const numericMatch = text.match(/\b(\d+)\b/);
+  if (numericMatch) {
+    const value = parseInt(numericMatch[1], 10);
+    if (value > 0 && value <= 50) return value;
+  }
 
-  const partySize = parseInt(match[1], 10);
-  if (!Number.isInteger(partySize) || partySize <= 0) return null;
+  const wordMap = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10
+  };
 
-  return partySize;
+  for (const [word, number] of Object.entries(wordMap)) {
+    const regex = new RegExp(`\\b${word}\\b`, "i");
+    if (regex.test(text)) {
+      return number;
+    }
+  }
+
+  const phrases = [
+    /table for (\d+)/i,
+    /for (\d+) people/i,
+    /party of (\d+)/i
+  ];
+
+  for (const pattern of phrases) {
+    const match = text.match(pattern);
+    if (match) {
+      const value = parseInt(match[1], 10);
+      if (value > 0 && value <= 50) return value;
+    }
+  }
+
+  return null;
 }
 
 function extractTimeFromText(text) {
