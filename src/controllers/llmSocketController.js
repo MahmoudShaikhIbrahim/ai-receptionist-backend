@@ -1,8 +1,8 @@
 const Agent = require("../models/Agent");
 const Call = require("../models/Call");
 const Booking = require("../models/Booking");
-
 const { wordsToNumbers } = require("words-to-numbers");
+
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
@@ -28,10 +28,25 @@ function isConversationEnding(text) {
   return phrases.some((p) => lower.includes(p));
 }
 
+function extractDate(text) {
+  if (!text) return null;
+
+  const lower = text.toLowerCase();
+
+  if (lower.includes("tomorrow")) {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return d;
+  }
+
+  return new Date(); // default today
+}
+
 function extractBookingDataFromTranscript(transcript) {
   let partySize = null;
   let requestedStart = null;
   let customerName = null;
+  let bookingDate = null;
 
   for (const item of transcript) {
     if (!item?.content) continue;
@@ -50,11 +65,13 @@ function extractBookingDataFromTranscript(transcript) {
         let hour = parseInt(match[1]);
         const minute = parseInt(match[2] || "0");
 
+        if (!match[3]) hour += 12; // default to PM
         if (match[3] === "pm" && hour < 12) hour += 12;
         if (match[3] === "am" && hour === 12) hour = 0;
 
-        const date = new Date();
+        const date = extractDate(normalized);
         date.setHours(hour, minute, 0, 0);
+
         requestedStart = date;
       }
     }
@@ -150,7 +167,7 @@ async function processLLMMessage(body) {
       {
         role: "system",
         content:
-          "You are a friendly restaurant receptionist helping customers.",
+          "You are a friendly restaurant receptionist. The restaurant books tables for TODAY by default unless the caller mentions another date. Only collect: number of guests, time, and name. Never ask for a date unless the customer mentions one.",
       },
       ...transcript.map((m) => ({
         role: m.role === "agent" ? "assistant" : "user",

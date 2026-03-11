@@ -22,6 +22,7 @@ function handleLLMWebSocket(ws, req) {
         ? data.transcript_json
         : [];
 
+      // Send greeting when Retell asks for first response and nobody has spoken yet
       if (interactionType === "response_required" && transcript.length === 0) {
         const greeting = {
           response_id: data.response_id,
