@@ -29,7 +29,7 @@ function extractPartySizeFromText(text) {
     seven: 7,
     eight: 8,
     nine: 9,
-    ten: 10
+    ten: 10,
   };
 
   for (const [word, number] of Object.entries(wordMap)) {
@@ -42,7 +42,7 @@ function extractPartySizeFromText(text) {
   const phrases = [
     /table for (\d+)/i,
     /for (\d+) people/i,
-    /party of (\d+)/i
+    /party of (\d+)/i,
   ];
 
   for (const pattern of phrases) {
@@ -103,7 +103,10 @@ function extractNameFromText(text) {
       if (cleaned.length >= 2) {
         return cleaned
           .split(" ")
-          .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+          .map(
+            (part) =>
+              part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
+          )
           .join(" ");
       }
     }
@@ -147,15 +150,22 @@ function extractBookingDataFromTranscript(transcript) {
   };
 }
 
+function detectEndingIntent(text) {
+  if (!text) return false;
+
+  const endingPatterns =
+    /\b(thank(s| you)?|thanks a lot|thank you very much|that's all|that’s all|goodbye|bye|have a nice day|see you)\b/i;
+
+  return endingPatterns.test(text);
+}
+
 async function processLLMMessage(body) {
   console.log("WEBSOCKET LLM CONTROLLER HIT");
   console.log("Processing WS body:", JSON.stringify(body));
 
   const interactionType = body.interaction_type || body.type || "unknown";
 
-  if (interactionType === "ping_pong") {
-    return null;
-  }
+  if (interactionType === "ping_pong") return null;
 
   if (!["response_required", "reminder_required"].includes(interactionType)) {
     console.log("Skipping event:", interactionType);
@@ -167,6 +177,20 @@ async function processLLMMessage(body) {
     : Array.isArray(body.transcript_json)
     ? body.transcript_json
     : [];
+
+  const latestUser = transcript
+    .filter((t) => t.role === "user" || t.role === "caller")
+    .pop();
+
+  const latestUserText = latestUser?.content || "";
+
+  if (detectEndingIntent(latestUserText)) {
+    return {
+      response:
+        "You're very welcome. We look forward to seeing you. Goodbye!",
+      endCall: true,
+    };
+  }
 
   const messages = [
     {
@@ -185,8 +209,7 @@ Rules:
 - Ask only ONE question at a time.
 - Keep responses short.
 - Do NOT claim a booking is confirmed unless the system confirms it.
-- If you still need missing details, ask only for the next missing detail.
-      `.trim(),
+`.trim(),
     },
   ];
 
@@ -204,14 +227,11 @@ Rules:
 
   try {
     const aiReply = await getAIResponse(messages);
+
     const callId = body.call_id;
 
     if (!callId) {
       console.warn("No callId received in WS payload");
-      return { response: aiReply };
-    }
-
-    if (interactionType !== "response_required") {
       return { response: aiReply };
     }
 
@@ -223,27 +243,34 @@ Rules:
       .lean();
 
     if (existingBooking) {
-      console.log("Booking already exists for call:", callId, existingBooking._id);
+      console.log(
+        "Booking already exists for call:",
+        callId,
+        existingBooking._id
+      );
       return { response: "Your reservation is already confirmed." };
     }
 
     const { partySize, requestedStart, customerName } =
       extractBookingDataFromTranscript(transcript);
 
-    if (!partySize || !requestedStart) {
-      return { response: aiReply };
-    }
-
-    console.log("📅 Booking intent detected", {
-      callId,
+    console.log("Extracted booking data:", {
       partySize,
       requestedStart,
       customerName,
     });
 
-   const call = await Call.findOne({
-  $or: [{ callId }, { call_id: callId }]
-}).lean();
+    if (!partySize || !requestedStart) {
+      return { response: aiReply };
+    }
+
+    console.log("📅 Booking intent detected");
+
+    const call = await Call.findOne({
+      $or: [{ callId }, { call_id: callId }],
+    }).lean();
+
+    console.log("Resolved call:", call);
 
     if (!call) {
       console.warn("Call not found:", callId);
