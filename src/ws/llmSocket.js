@@ -1,3 +1,5 @@
+// src/ws/llmSocket.js
+
 const { processLLMMessage } = require("../controllers/llmSocketController");
 
 function handleLLMWebSocket(ws, req) {
@@ -6,15 +8,6 @@ function handleLLMWebSocket(ws, req) {
     req.headers["x-forwarded-for"] ||
       req.socket.remoteAddress ||
       "unknown"
-  );
-
-  ws.send(
-    JSON.stringify({
-      response_id: 0,
-      content: "Hello! Welcome to our restaurant. How can I help you today?",
-      content_complete: true,
-      end_call: false,
-    })
   );
 
   ws.on("message", async (rawMessage) => {
@@ -64,8 +57,7 @@ function handleLLMWebSocket(ws, req) {
       }
 
       const payload = {
-        response_id:
-          data.response_id !== undefined ? data.response_id : 0,
+        response_id: data.response_id, // IMPORTANT: must match Retell
         content: responseText,
         content_complete: true,
         end_call: false,
@@ -77,14 +69,18 @@ function handleLLMWebSocket(ws, req) {
       console.error("❌ Error processing message:", err.message || err);
       console.error("Raw message:", messageStr);
 
-      ws.send(
-        JSON.stringify({
-          response_id: 0,
-          content: "Sorry, something went wrong. Could you repeat that?",
-          content_complete: true,
-          end_call: false,
-        })
-      );
+      try {
+        ws.send(
+          JSON.stringify({
+            response_id: 0,
+            content: "Sorry, something went wrong. Could you repeat that?",
+            content_complete: true,
+            end_call: false,
+          })
+        );
+      } catch (sendErr) {
+        console.error("Failed sending fallback message:", sendErr);
+      }
     }
   });
 

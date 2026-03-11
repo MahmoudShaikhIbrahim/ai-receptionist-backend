@@ -1,3 +1,5 @@
+// src/controllers/llmSocketController.js
+
 const Agent = require("../models/Agent");
 const Call = require("../models/Call");
 const Booking = require("../models/Booking");
@@ -29,20 +31,18 @@ function extractPartySizeFromText(text) {
     seven: 7,
     eight: 8,
     nine: 9,
-    ten: 10
+    ten: 10,
   };
 
   for (const [word, number] of Object.entries(wordMap)) {
     const regex = new RegExp(`\\b${word}\\b`, "i");
-    if (regex.test(text)) {
-      return number;
-    }
+    if (regex.test(text)) return number;
   }
 
   const phrases = [
     /table for (\d+)/i,
     /for (\d+) people/i,
-    /party of (\d+)/i
+    /party of (\d+)/i,
   ];
 
   for (const pattern of phrases) {
@@ -59,14 +59,13 @@ function extractPartySizeFromText(text) {
 function extractTimeFromText(text) {
   if (!text) return null;
 
-  const match = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  const match = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
   if (!match) return null;
 
   let hour = parseInt(match[1], 10);
   const minute = parseInt(match[2] || "0", 10);
-  const meridiem = match[3] ? match[3].toLowerCase() : null;
+  const meridiem = match[3].toLowerCase();
 
-  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
   if (minute < 0 || minute > 59) return null;
 
   if (meridiem === "pm" && hour < 12) hour += 12;
@@ -103,7 +102,10 @@ function extractNameFromText(text) {
       if (cleaned.length >= 2) {
         return cleaned
           .split(" ")
-          .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+          .map(
+            (part) =>
+              part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
+          )
           .join(" ");
       }
     }
@@ -112,62 +114,7 @@ function extractNameFromText(text) {
   return null;
 }
 
-function extractBookingDataFromTranscript(transcript) {
-  let partySize = null;
-  let requestedStart = null;
-  let customerName = null;
-
-  const callerUtterances = transcript.filter(
-    (item) =>
-      item &&
-      typeof item.content === "string" &&
-      (item.role === "user" || item.role === "caller")
-  );
-
-  for (const utterance of callerUtterances) {
-    const normalized = normalizeText(utterance.content);
-
-    if (!partySize) {
-      partySize = extractPartySizeFromText(normalized);
-    }
-
-    if (!requestedStart) {
-      requestedStart = extractTimeFromText(normalized);
-    }
-
-    if (!customerName) {
-      customerName = extractNameFromText(utterance.content);
-    }
-  }
-
-  return {
-    partySize,
-    requestedStart,
-    customerName: customerName || "Phone Guest",
-  };
-}
-
-async function processLLMMessage(body) {
-  console.log("WEBSOCKET LLM CONTROLLER HIT");
-  console.log("Processing WS body:", JSON.stringify(body));
-
-  const interactionType = body.interaction_type || body.type || "unknown";
-
-  if (interactionType === "ping_pong") {
-    return null;
-  }
-
-  if (!["response_required", "reminder_required"].includes(interactionType)) {
-    console.log("Skipping event:", interactionType);
-    return null;
-  }
-
-  const transcript = Array.isArray(body.transcript)
-    ? body.transcript
-    : Array.isArray(body.transcript_json)
-    ? body.transcript_json
-    : [];
-
+function buildMessages(transcript) {
   const messages = [
     {
       role: "system",
@@ -185,7 +132,6 @@ Rules:
 - Ask only ONE question at a time.
 - Keep responses short.
 - Do NOT claim a booking is confirmed unless the system confirms it.
-- If you still need missing details, ask only for the next missing detail.
       `.trim(),
     },
   ];
@@ -202,96 +148,109 @@ Rules:
     }
   }
 
+  return messages;
+}
+
+async function processLLMMessage(body) {
+  console.log("WEBSOCKET LLM CONTROLLER HIT");
+  console.log("Processing WS body:", JSON.stringify(body));
+
+  const interactionType = body.interaction_type || body.type || "unknown";
+
+  if (interactionType === "ping_pong") return null;
+
+  if (!["response_required", "reminder_required"].includes(interactionType)) {
+    console.log("Skipping event:", interactionType);
+    return null;
+  }
+
+  const transcript = Array.isArray(body.transcript)
+    ? body.transcript
+    : Array.isArray(body.transcript_json)
+    ? body.transcript_json
+    : [];
+
+  const callId = body.call_id;
+
+  const userText = body.latest_user_text || "";
+  const normalized = normalizeText(userText);
+
+  const partySize = extractPartySizeFromText(normalized);
+  const requestedStart = extractTimeFromText(normalized);
+  const customerName = extractNameFromText(userText) || "Phone Guest";
+
   try {
-    const aiReply = await getAIResponse(messages);
-    const callId = body.call_id;
-
-    if (!callId) {
-      console.warn("No callId received in WS payload");
-      return { response: aiReply };
-    }
-
-    if (interactionType !== "response_required") {
-      return { response: aiReply };
-    }
-
-    const existingBooking = await Booking.findOne({
-      callId,
-      status: { $in: ["confirmed", "seated"] },
-    })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    if (existingBooking) {
-      console.log("Booking already exists for call:", callId, existingBooking._id);
-      return { response: "Your reservation is already confirmed." };
-    }
-
-    const { partySize, requestedStart, customerName } =
-      extractBookingDataFromTranscript(transcript);
-
-    if (!partySize || !requestedStart) {
-      return { response: aiReply };
-    }
-
-    console.log("📅 Booking intent detected", {
-      callId,
-      partySize,
-      requestedStart,
-      customerName,
-    });
-
-   const call = await Call.findOne({
-  $or: [{ callId }, { call_id: callId }]
-}).lean();
-
-    if (!call) {
-      console.warn("Call not found:", callId);
-      return { response: aiReply };
-    }
-
-    const agent = await Agent.findById(call.agentId).lean();
-
-    if (!agent) {
-      console.warn("Agent not found:", call.agentId);
-      return { response: aiReply };
-    }
-
-    try {
-      const result = await findNearestAvailableSlot({
-        businessId: agent.businessId,
-        requestedStart,
-        durationMinutes: 90,
-        partySize,
-        source: "ai",
-        agentId: agent._id,
+    if (partySize && requestedStart && callId) {
+      console.log("Booking intent detected", {
         callId,
+        partySize,
+        requestedStart,
         customerName,
-        customerPhone: null,
-        notes: null,
-        searchWindowMinutes: 120,
       });
 
-      console.log("AI booking engine result:", result);
+      const existingBooking = await Booking.findOne({
+        callId,
+        status: { $in: ["confirmed", "seated"] },
+      })
+        .sort({ createdAt: -1 })
+        .lean();
 
-      if (result?.success) {
-        return { response: "Perfect. Your table is confirmed." };
+      if (existingBooking) {
+        return { response: "Your reservation is already confirmed." };
       }
 
-      if (result?.suggestedTime) {
-        const suggestedDate = new Date(result.suggestedTime);
-        const suggestedLabel = suggestedDate.toLocaleTimeString("en-US", {
-          hour: "numeric",
-          minute: "2-digit",
-          hour12: true,
-        });
+      const call = await Call.findOne({
+        $or: [{ callId }, { call_id: callId }],
+      }).lean();
 
-        return {
-          response: `We are full at that time. Would ${suggestedLabel} work instead?`,
-        };
+      if (!call) {
+        console.warn("Call not found:", callId);
+      } else {
+        const agent = await Agent.findById(call.agentId).lean();
+
+        if (agent) {
+          const result = await findNearestAvailableSlot({
+            businessId: agent.businessId,
+            requestedStart,
+            durationMinutes: 90,
+            partySize,
+            source: "ai",
+            agentId: agent._id,
+            callId,
+            customerName,
+            customerPhone: null,
+            notes: null,
+            searchWindowMinutes: 120,
+          });
+
+          console.log("AI booking engine result:", result);
+
+          if (result?.success) {
+            return { response: "Perfect. Your table is confirmed." };
+          }
+
+          if (result?.suggestedTime) {
+            const suggestedDate = new Date(result.suggestedTime);
+
+            const suggestedLabel = suggestedDate.toLocaleTimeString("en-US", {
+              hour: "numeric",
+              minute: "2-digit",
+              hour12: true,
+            });
+
+            return {
+              response: `We are full at that time. Would ${suggestedLabel} work instead?`,
+            };
+          }
+        }
       }
-    } catch (bookingError) {
-      console.error("Booking engine error:", bookingError);
+    }
+
+    const messages = buildMessages(transcript);
+    const aiReply = await getAIResponse(messages);
+
+    if (!aiReply || typeof aiReply !== "string") {
+      return { response: "Could you repeat that please?" };
     }
 
     return { response: aiReply };
