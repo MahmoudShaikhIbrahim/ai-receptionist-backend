@@ -241,7 +241,9 @@ Rules:
       customerName,
     });
 
-    const call = await Call.findOne({ callId }).lean();
+   const call = await Call.findOne({
+  $or: [{ callId }, { call_id: callId }]
+}).lean();
 
     if (!call) {
       console.warn("Call not found:", callId);
