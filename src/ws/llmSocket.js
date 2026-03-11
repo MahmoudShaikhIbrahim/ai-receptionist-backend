@@ -8,7 +8,6 @@ function handleLLMWebSocket(ws, req) {
       "unknown"
   );
 
-  // Greeting stays exactly as you originally had it
   ws.send(
     JSON.stringify({
       response_id: 0,
@@ -24,9 +23,8 @@ function handleLLMWebSocket(ws, req) {
 
     try {
       const data = JSON.parse(messageStr);
-      const interactionType = data?.interaction_type;
+      const interactionType = data.interaction_type;
 
-      // keep your original behavior
       if (!["response_required", "reminder_required"].includes(interactionType)) {
         console.log("Skipping event:", interactionType);
         return;
@@ -34,9 +32,9 @@ function handleLLMWebSocket(ws, req) {
 
       let latestUserText = "";
 
-      const transcript = Array.isArray(data?.transcript)
+      const transcript = Array.isArray(data.transcript)
         ? data.transcript
-        : Array.isArray(data?.transcript_json)
+        : Array.isArray(data.transcript_json)
         ? data.transcript_json
         : [];
 
@@ -45,7 +43,7 @@ function handleLLMWebSocket(ws, req) {
 
         if (
           (utterance?.role === "user" || utterance?.role === "caller") &&
-          typeof utterance?.content === "string"
+          typeof utterance.content === "string"
         ) {
           latestUserText = utterance.content.trim();
           break;
@@ -60,7 +58,6 @@ function handleLLMWebSocket(ws, req) {
       });
 
       let responseText = result?.response;
-      const shouldEndCall = result?.endCall === true;
 
       if (typeof responseText !== "string" || responseText.trim() === "") {
         responseText = "I'm sorry, could you repeat that please?";
@@ -68,15 +65,14 @@ function handleLLMWebSocket(ws, req) {
 
       const payload = {
         response_id:
-          data?.response_id !== undefined ? data.response_id : 0,
+          data.response_id !== undefined ? data.response_id : 0,
         content: responseText,
         content_complete: true,
-        end_call: shouldEndCall,
+        end_call: false,
       };
 
       ws.send(JSON.stringify(payload));
       console.log("📤 Sent response to Retell:", payload.content);
-
     } catch (err) {
       console.error("❌ Error processing message:", err.message || err);
       console.error("Raw message:", messageStr);
