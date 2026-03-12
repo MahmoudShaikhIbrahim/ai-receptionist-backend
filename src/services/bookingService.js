@@ -169,6 +169,20 @@ async function createBooking({
   floorId = null,
   zone = null,
 }) {
+
+  // Prevent duplicate bookings for the same call
+  if (callId) {
+    const existingBooking = await Booking.findOne({
+      callId,
+      status: { $in: ["confirmed", "seated"] },
+    }).lean();
+
+    if (existingBooking) {
+      console.log("⚠️ Booking already exists for call:", callId);
+      return existingBooking;
+    }
+  }
+
   console.log("🔎 createBooking called with:", {
     businessId: String(businessId),
     startIso,
@@ -259,20 +273,18 @@ async function findNearestAvailableSlot({
   });
 
   if (directTables) {
-    const directBooking = await Booking.create({
-      businessId,
-      tables: directTables,
-      agentId,
-      callId,
-      startIso: requestedStart,
-      endIso: requestedEnd,
-      partySize,
-      customerName,
-      customerPhone,
-      notes,
-      source,
-      status: "confirmed",
-    });
+  const directBooking = await createBooking({
+    businessId,
+    startIso: requestedStart,
+    endIso: requestedEnd,
+    partySize,
+    source,
+    agentId,
+    callId,
+    customerName,
+    customerPhone,
+    notes,
+  });
 
     console.log("✅ Direct booking success:", String(directBooking._id));
 

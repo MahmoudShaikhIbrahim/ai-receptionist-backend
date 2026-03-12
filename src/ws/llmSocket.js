@@ -8,6 +8,15 @@ function handleLLMWebSocket(ws, req) {
       "unknown"
   );
 
+  ws.send(
+    JSON.stringify({
+      response_id: 0,
+      content: "Hello! Welcome to our restaurant. How can I help you today?",
+      content_complete: true,
+      end_call: false,
+    })
+  );
+
   ws.on("message", async (rawMessage) => {
     const messageStr = rawMessage.toString();
     console.log("📩 Received from Retell:", messageStr);
@@ -16,33 +25,18 @@ function handleLLMWebSocket(ws, req) {
       const data = JSON.parse(messageStr);
       const interactionType = data.interaction_type;
 
-      const transcript = Array.isArray(data.transcript)
-        ? data.transcript
-        : Array.isArray(data.transcript_json)
-        ? data.transcript_json
-        : [];
-
-      // Send greeting when Retell asks for first response and nobody has spoken yet
-      if (interactionType === "response_required" && transcript.length === 0) {
-        const greeting = {
-          response_id: data.response_id,
-          content:
-            "Hello! Welcome to our restaurant. How can I help you today?",
-          content_complete: true,
-          end_call: false,
-        };
-
-        ws.send(JSON.stringify(greeting));
-        console.log("📤 Sent greeting");
-        return;
-      }
-
       if (!["response_required", "reminder_required"].includes(interactionType)) {
         console.log("Skipping event:", interactionType);
         return;
       }
 
       let latestUserText = "";
+
+      const transcript = Array.isArray(data.transcript)
+        ? data.transcript
+        : Array.isArray(data.transcript_json)
+        ? data.transcript_json
+        : [];
 
       for (let i = transcript.length - 1; i >= 0; i--) {
         const utterance = transcript[i];
@@ -56,27 +50,37 @@ function handleLLMWebSocket(ws, req) {
         }
       }
 
+      console.log("🗣 Latest user text:", latestUserText || "(none)");
+
       const result = await processLLMMessage({
         ...data,
         latest_user_text: latestUserText,
       });
 
+      let responseText = result?.response;
+
+      if (typeof responseText !== "string" || responseText.trim() === "") {
+        responseText = "I'm sorry, could you repeat that please?";
+      }
+
       const payload = {
-        response_id: data.response_id,
-        content: result?.response || "Could you repeat that please?",
+        response_id:
+          data.response_id !== undefined ? data.response_id : 0,
+        content: responseText,
         content_complete: true,
-        end_call: result?.endCall === true,
+        end_call: false,
       };
 
       ws.send(JSON.stringify(payload));
-      console.log("📤 Sent response:", payload.content);
+      console.log("📤 Sent response to Retell:", payload.content);
     } catch (err) {
       console.error("❌ Error processing message:", err.message || err);
+      console.error("Raw message:", messageStr);
 
       ws.send(
         JSON.stringify({
           response_id: 0,
-          content: "Sorry, something went wrong.",
+          content: "Sorry, something went wrong. Could you repeat that?",
           content_complete: true,
           end_call: false,
         })
@@ -85,7 +89,10 @@ function handleLLMWebSocket(ws, req) {
   });
 
   ws.on("close", (code, reason) => {
-    console.log(`🔌 WebSocket closed (${code})`, reason?.toString());
+    console.log(
+      `🔌 Retell WebSocket closed (code: ${code})`,
+      reason?.toString() || "no reason"
+    );
   });
 
   ws.on("error", (err) => {
