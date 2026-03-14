@@ -5,12 +5,18 @@ const { wordsToNumbers } = require("words-to-numbers");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
+function normalizeText(value) {
+  if (typeof value !== "string") return "";
+
+  const converted = wordsToNumbers(value.toLowerCase());
+  return String(converted).trim();
+}
+
 function extractPartySizeFromText(text) {
   if (!text || typeof text !== "string") return null;
 
   const normalized = normalizeText(text);
 
-  /* 1️⃣ Look for explicit booking phrases first */
   const patterns = [
     /table for (\d+)/i,
     /party of (\d+)/i,
@@ -26,14 +32,12 @@ function extractPartySizeFromText(text) {
     }
   }
 
-  /* 2️⃣ Fallback: detect standalone number not related to time */
   const numbers = normalized.match(/\b\d+\b/g);
 
   if (numbers) {
     for (const n of numbers) {
       const value = parseInt(n, 10);
 
-      // Skip time numbers like "2 pm" or "7 am"
       const timePattern = new RegExp(`${value}\\s?(am|pm)`, "i");
       if (timePattern.test(normalized)) continue;
 
