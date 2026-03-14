@@ -8,8 +8,9 @@ const { findNearestAvailableSlot } = require("../services/bookingService");
 function normalizeText(value) {
   if (typeof value !== "string") return "";
 
-  const converted = wordsToNumbers(value.toLowerCase());
-  return String(converted).trim();
+  const protectedText = value.replace(/\bI\b/g, "__PRONOUN_I__");
+  const converted = wordsToNumbers(protectedText.toLowerCase());
+  return String(converted).replace(/__pronoun_i__/g, "i").trim();
 }
 
 function extractPartySizeFromText(text) {
