@@ -52,10 +52,13 @@ function handleLLMWebSocket(ws, req) {
 
       console.log("🗣 Latest user text:", latestUserText || "(none)");
 
-      const result = await processLLMMessage({
-        ...data,
-        latest_user_text: latestUserText,
-      });
+      const result = await processLLMMessage(
+  {
+    ...data,
+    latest_user_text: latestUserText,
+  },
+  req
+);
 
       let responseText = result?.response;
 
