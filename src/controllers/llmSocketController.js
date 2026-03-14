@@ -294,6 +294,12 @@ console.log("📅 Booking intent detected", {
     }
 
     try {
+      console.log("🚀 Attempting booking:", {
+  callId,
+  partySize,
+  requestedStart,
+  customerName
+});
       const result = await findNearestAvailableSlot({
         businessId: agent.businessId,
         requestedStart,
@@ -310,12 +316,15 @@ console.log("📅 Booking intent detected", {
 
       console.log("AI booking engine result:", result);
 
-      if (result?.success) {
-        return {
-  response: "Alright. Your table is confirmed. We look forward to seeing you.",
-  end_call: true
-};
-      }
+      if (result && result.success && result.booking) {
+  console.log("✅ Booking saved:", result.booking._id);
+
+  return {
+    response: "Perfect. Your table is confirmed.",
+    end_call: true
+  };
+}
+      
 
       if (result?.suggestedTime) {
         const suggestedDate = new Date(result.suggestedTime);
