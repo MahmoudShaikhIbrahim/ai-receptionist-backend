@@ -67,12 +67,11 @@ function handleLLMWebSocket(ws, req) {
       }
 
       const payload = {
-        response_id:
-          data.response_id !== undefined ? data.response_id : 0,
-        content: responseText,
-        content_complete: true,
-        end_call: false,
-      };
+  response_id: data.response_id ?? 0,
+  content: responseText,
+  content_complete: true,
+  end_call: result?.end_call === true,
+};
 
       ws.send(JSON.stringify(payload));
       console.log("📤 Sent response to Retell:", payload.content);

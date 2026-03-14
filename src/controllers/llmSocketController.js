@@ -5,51 +5,39 @@ const { wordsToNumbers } = require("words-to-numbers");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
-function normalizeText(value) {
-  if (typeof value !== "string") return "";
-  return wordsToNumbers(value.toLowerCase()).trim();
-}
-
 function extractPartySizeFromText(text) {
-  if (!text) return null;
+  if (!text || typeof text !== "string") return null;
 
-  const numericMatch = text.match(/\b(\d+)\b/);
-  if (numericMatch) {
-    const value = parseInt(numericMatch[1], 10);
-    if (value > 0 && value <= 50) return value;
-  }
+  const normalized = normalizeText(text);
 
-  const wordMap = {
-    one: 1,
-    two: 2,
-    three: 3,
-    four: 4,
-    five: 5,
-    six: 6,
-    seven: 7,
-    eight: 8,
-    nine: 9,
-    ten: 10
-  };
+  /* 1️⃣ Look for explicit booking phrases first */
+  const patterns = [
+    /table for (\d+)/i,
+    /party of (\d+)/i,
+    /for (\d+) people/i,
+    /for (\d+)/i
+  ];
 
-  for (const [word, number] of Object.entries(wordMap)) {
-    const regex = new RegExp(`\\b${word}\\b`, "i");
-    if (regex.test(text)) {
-      return number;
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match) {
+      const value = parseInt(match[1], 10);
+      if (value >= 1 && value <= 50) return value;
     }
   }
 
-  const phrases = [
-    /table for (\d+)/i,
-    /for (\d+) people/i,
-    /party of (\d+)/i
-  ];
+  /* 2️⃣ Fallback: detect standalone number not related to time */
+  const numbers = normalized.match(/\b\d+\b/g);
 
-  for (const pattern of phrases) {
-    const match = text.match(pattern);
-    if (match) {
-      const value = parseInt(match[1], 10);
-      if (value > 0 && value <= 50) return value;
+  if (numbers) {
+    for (const n of numbers) {
+      const value = parseInt(n, 10);
+
+      // Skip time numbers like "2 pm" or "7 am"
+      const timePattern = new RegExp(`${value}\\s?(am|pm)`, "i");
+      if (timePattern.test(normalized)) continue;
+
+      if (value >= 1 && value <= 50) return value;
     }
   }
 
@@ -189,20 +177,21 @@ async function processLLMMessage(body, req) {
     {
       role: "system",
       content: `
-You are a friendly restaurant receptionist.
+You are the AI receptionist for a restaurant.
 
 Your job is to help customers reserve tables.
 
-Collect:
+You must collect ALL of the following before confirming a booking:
 - number of people
-- time
-- name
+- reservation time
+- customer name
 
 Rules:
-- Ask only ONE question at a time.
-- Keep responses short.
-- Do NOT claim a booking is confirmed unless the system confirms it.
-- If you still need missing details, ask only for the next missing detail.
+- Ask ONE question at a time.
+- Do not confirm a reservation yourself.
+- The system will confirm availability.
+- If information is missing, ask for the missing information.
+- Keep responses short and natural.
       `.trim(),
     },
   ];
@@ -273,7 +262,7 @@ console.log("📊 Extracted booking data:", {
  Only block booking if party size OR time is missing.
  Do NOT block if customerName is missing.
 */
-if (!partySize || !requestedStart) {
+if (!partySize || !requestedStart || !customerName) {
   return { response: aiReply };
 }
 
@@ -310,7 +299,7 @@ console.log("📅 Booking intent detected", {
         agentId: agent._id,
         callId,
         customerName,
-        customerPhone: null,
+        customerPhone: call?.fromNumber || call?.from || null,
         notes: null,
         searchWindowMinutes: 120,
       });
@@ -318,7 +307,10 @@ console.log("📅 Booking intent detected", {
       console.log("AI booking engine result:", result);
 
       if (result?.success) {
-        return { response: "Perfect. Your table is confirmed." };
+        return {
+  response: "Alright. Your table is confirmed. We look forward to seeing you.",
+  end_call: true
+};
       }
 
       if (result?.suggestedTime) {
