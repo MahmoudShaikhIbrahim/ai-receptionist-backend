@@ -164,7 +164,7 @@ function extractBookingDataFromTranscript(transcript) {
   };
 }
 
-async function processLLMMessage(body) {
+async function processLLMMessage(body, req) {
   console.log("WEBSOCKET LLM CONTROLLER HIT");
   console.log("Processing WS body:", JSON.stringify(body));
 
@@ -221,10 +221,25 @@ Rules:
 
   try {
     const aiReply = await getAIResponse(messages);
-    const callId = body.call_id;
+
+    // 🔧 FIX: safely extract callId
+    let callId =
+      body?.call_id ||
+      body?.callId ||
+      body?.metadata?.call_id ||
+      null;
+
+    if (!callId && req?.url) {
+      const parts = req.url.split("/");
+      const possibleId = parts[parts.length - 1];
+
+      if (possibleId && possibleId.startsWith("call_")) {
+        callId = possibleId;
+      }
+    }
 
     if (!callId) {
-      console.warn("No callId received in WS payload");
+      console.warn("No callId received in WS payload or URL");
       return { response: aiReply };
     }
 
