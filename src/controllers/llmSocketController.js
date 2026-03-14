@@ -133,7 +133,8 @@ function extractBookingDataFromTranscript(transcript) {
       (item.role === "user" || item.role === "caller")
   );
 
-  for (const utterance of callerUtterances) {
+  // Process newest messages first
+  for (const utterance of callerUtterances.reverse()) {
     const normalized = normalizeText(utterance.content);
 
     if (!partySize) {
@@ -146,6 +147,10 @@ function extractBookingDataFromTranscript(transcript) {
 
     if (!customerName) {
       customerName = extractNameFromText(utterance.content);
+    }
+
+    if (partySize && requestedStart && customerName) {
+      break;
     }
   }
 
@@ -166,10 +171,10 @@ async function processLLMMessage(body, req) {
     return null;
   }
 
-  if (!["response_required", "reminder_required"].includes(interactionType)) {
-    console.log("Skipping event:", interactionType);
-    return null;
-  }
+ if (interactionType !== "response_required") {
+  console.log("Skipping event:", interactionType);
+  return null;
+}
 
   const transcript = Array.isArray(body.transcript)
     ? body.transcript
