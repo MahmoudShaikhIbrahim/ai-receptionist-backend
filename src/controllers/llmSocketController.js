@@ -245,18 +245,29 @@ Rules:
     }
 
     const { partySize, requestedStart, customerName } =
-      extractBookingDataFromTranscript(transcript);
+  extractBookingDataFromTranscript(transcript);
 
-    if (!partySize || !requestedStart || !customerName || customerName === "Phone Guest") {
+console.log("📊 Extracted booking data:", {
+  partySize,
+  requestedStart,
+  customerName,
+  callId,
+});
+
+/*
+ Only block booking if party size OR time is missing.
+ Do NOT block if customerName is missing.
+*/
+if (!partySize || !requestedStart) {
   return { response: aiReply };
 }
 
-    console.log("📅 Booking intent detected", {
-      callId,
-      partySize,
-      requestedStart,
-      customerName,
-    });
+console.log("📅 Booking intent detected", {
+  callId,
+  partySize,
+  requestedStart,
+  customerName,
+});
 
    const call = await Call.findOne({
   $or: [{ callId }, { call_id: callId }]
