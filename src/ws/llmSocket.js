@@ -1,3 +1,5 @@
+// src/ws/llmSocket.js
+
 const { processLLMMessage } = require("../controllers/llmSocketController");
 
 function handleLLMWebSocket(ws, req) {
@@ -8,6 +10,7 @@ function handleLLMWebSocket(ws, req) {
       "unknown"
   );
 
+  // Initial greeting
   ws.send(
     JSON.stringify({
       response_id: 0,
@@ -25,7 +28,8 @@ function handleLLMWebSocket(ws, req) {
       const data = JSON.parse(messageStr);
       const interactionType = data.interaction_type;
 
-      if (!["response_required", "reminder_required"].includes(interactionType)) {
+      // Only process real user turns
+      if (interactionType !== "response_required") {
         console.log("Skipping event:", interactionType);
         return;
       }
@@ -38,6 +42,7 @@ function handleLLMWebSocket(ws, req) {
         ? data.transcript_json
         : [];
 
+      // Extract latest user utterance
       for (let i = transcript.length - 1; i >= 0; i--) {
         const utterance = transcript[i];
 
@@ -53,28 +58,38 @@ function handleLLMWebSocket(ws, req) {
       console.log("🗣 Latest user text:", latestUserText || "(none)");
 
       const result = await processLLMMessage(
-  {
-    ...data,
-    latest_user_text: latestUserText,
-  },
-  req
-);
+        {
+          ...data,
+          latest_user_text: latestUserText,
+        },
+        req
+      );
+
+      // Defensive fallback
+      if (!result) {
+        console.warn("Controller returned null");
+        return;
+      }
 
       let responseText = result?.response;
+      const shouldEndCall = result?.end_call === true;
 
       if (typeof responseText !== "string" || responseText.trim() === "") {
         responseText = "I'm sorry, could you repeat that please?";
       }
 
       const payload = {
-  response_id: data.response_id ?? 0,
-  content: responseText,
-  content_complete: true,
-  end_call: result?.end_call === true,
-};
+        response_id: data.response_id ?? 0,
+        content: responseText,
+        content_complete: true,
+        end_call: shouldEndCall,
+      };
 
       ws.send(JSON.stringify(payload));
+
       console.log("📤 Sent response to Retell:", payload.content);
+      console.log("☎️ End call:", shouldEndCall);
+
     } catch (err) {
       console.error("❌ Error processing message:", err.message || err);
       console.error("Raw message:", messageStr);

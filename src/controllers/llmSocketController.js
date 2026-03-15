@@ -18,14 +18,15 @@ function extractPartySizeFromText(text) {
 
   const normalized = normalizeText(text);
 
-  const patterns = [
+  const strongPatterns = [
     /table for (\d+)/i,
     /party of (\d+)/i,
     /for (\d+) people/i,
-    /for (\d+)/i
+    /we are (\d+)/i,
+    /there are (\d+) of us/i,
   ];
 
-  for (const pattern of patterns) {
+  for (const pattern of strongPatterns) {
     const match = normalized.match(pattern);
     if (match) {
       const value = parseInt(match[1], 10);
@@ -33,17 +34,12 @@ function extractPartySizeFromText(text) {
     }
   }
 
-  const numbers = normalized.match(/\b\d+\b/g);
-
-  if (numbers) {
-    for (const n of numbers) {
-      const value = parseInt(n, 10);
-
-      const timePattern = new RegExp(`${value}\\s?(am|pm)`, "i");
-      if (timePattern.test(normalized)) continue;
-
-      if (value >= 1 && value <= 50) return value;
-    }
+  // Only allow a bare number when the entire utterance is basically just the number
+  // e.g. "four", "4", "we are four" is handled above
+  const bareNumberMatch = normalized.match(/^\s*(\d{1,2})\s*\.?\s*$/);
+  if (bareNumberMatch) {
+    const value = parseInt(bareNumberMatch[1], 10);
+    if (value >= 1 && value <= 50) return value;
   }
 
   return null;
@@ -55,7 +51,7 @@ function extractTimeFromText(text) {
   const normalized = text.toLowerCase().trim();
 
   const colonMatch = normalized.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
-  const meridiemMatch = normalized.match(/\b(\d{1,2})\s*(am|pm)\b/i);
+  const meridiemMatch = normalized.match(/\b(?:at\s+)?(\d{1,2})\s*(am|pm)\b/i);
 
   let hour;
   let minute;
@@ -122,43 +118,21 @@ function extractNameFromText(text) {
   return null;
 }
 
-function extractBookingDataFromTranscript(transcript) {
-  let partySize = null;
-  let requestedStart = null;
-  let customerName = null;
-
-  const callerUtterances = transcript.filter(
-    (item) =>
-      item &&
-      typeof item.content === "string" &&
-      (item.role === "user" || item.role === "caller")
-  );
-
-  // Process newest messages first
-  for (const utterance of callerUtterances.reverse()) {
-    const normalized = normalizeText(utterance.content);
-
-    if (!partySize) {
-      partySize = extractPartySizeFromText(normalized);
-    }
-
-    if (!requestedStart) {
-      requestedStart = extractTimeFromText(normalized);
-    }
-
-    if (!customerName) {
-      customerName = extractNameFromText(utterance.content);
-    }
-
-    if (partySize && requestedStart && customerName) {
-      break;
-    }
+function extractBookingDataFromLatestText(text) {
+  if (!text || typeof text !== "string") {
+    return {
+      partySize: null,
+      requestedStart: null,
+      customerName: null,
+    };
   }
 
+  const normalized = normalizeText(text);
+
   return {
-    partySize,
-    requestedStart,
-    customerName: customerName || "Phone Guest",
+    partySize: extractPartySizeFromText(normalized),
+    requestedStart: extractTimeFromText(normalized),
+    customerName: extractNameFromText(text),
   };
 }
 
@@ -172,10 +146,10 @@ async function processLLMMessage(body, req) {
     return null;
   }
 
- if (interactionType !== "response_required") {
-  console.log("Skipping event:", interactionType);
-  return null;
-}
+  if (interactionType !== "response_required") {
+    console.log("Skipping event:", interactionType);
+    return null;
+  }
 
   const transcript = Array.isArray(body.transcript)
     ? body.transcript
@@ -199,7 +173,7 @@ Collect the following information:
 Rules:
 - Ask only ONE question at a time.
 - Keep responses short and natural.
-- When information is missing, ask for the missing detail.
+- When information is missing, ask only for the next missing detail.
 - Once all details are collected, wait for the system to check availability.
 - When the system confirms the reservation, tell the customer their table is confirmed.
       `.trim(),
@@ -221,7 +195,6 @@ Rules:
   try {
     const aiReply = await getAIResponse(messages);
 
-    // 🔧 FIX: safely extract callId
     let callId =
       body?.call_id ||
       body?.callId ||
@@ -242,10 +215,6 @@ Rules:
       return { response: aiReply };
     }
 
-    if (interactionType !== "response_required") {
-      return { response: aiReply };
-    }
-
     const existingBooking = await Booking.findOne({
       callId,
       status: { $in: ["confirmed", "seated"] },
@@ -255,37 +224,15 @@ Rules:
 
     if (existingBooking) {
       console.log("Booking already exists for call:", callId, existingBooking._id);
-      return { response: "Your reservation is already confirmed." };
+      return {
+        response: "Your reservation is already confirmed.",
+        end_call: true,
+      };
     }
 
-    const { partySize, requestedStart, customerName } =
-  extractBookingDataFromTranscript(transcript);
-
-console.log("📊 Extracted booking data:", {
-  partySize,
-  requestedStart,
-  customerName,
-  callId,
-});
-
-/*
- Only block booking if party size OR time is missing.
- Do NOT block if customerName is missing.
-*/
-if (!partySize || !requestedStart || !customerName) {
-  return { response: aiReply };
-}
-
-console.log("📅 Booking intent detected", {
-  callId,
-  partySize,
-  requestedStart,
-  customerName,
-});
-
-   const call = await Call.findOne({
-  $or: [{ callId }, { call_id: callId }]
-}).lean();
+    const call = await Call.findOne({
+      callId,
+    });
 
     if (!call) {
       console.warn("Call not found:", callId);
@@ -299,13 +246,75 @@ console.log("📅 Booking intent detected", {
       return { response: aiReply };
     }
 
+    const latestUserText =
+      typeof body.latest_user_text === "string"
+        ? body.latest_user_text.trim()
+        : "";
+
+    const extracted = extractBookingDataFromLatestText(latestUserText);
+
+    const currentDraft = call.reservationDraft || {};
+
+    // merge only new good values
+    const nextDraft = {
+      partySize: currentDraft.partySize ?? extracted.partySize ?? null,
+      requestedStart: currentDraft.requestedStart ?? extracted.requestedStart ?? null,
+      customerName:
+        currentDraft.customerName && currentDraft.customerName !== "Phone Guest"
+          ? currentDraft.customerName
+          : extracted.customerName ?? null,
+      customerPhone: currentDraft.customerPhone ?? call.callerNumber ?? null,
+    };
+
+    // if latest turn clearly contains a better value, allow overwrite of null only
+    if (!currentDraft.partySize && extracted.partySize) {
+      nextDraft.partySize = extracted.partySize;
+    }
+
+    if (!currentDraft.requestedStart && extracted.requestedStart) {
+      nextDraft.requestedStart = extracted.requestedStart;
+    }
+
+    if (
+      (!currentDraft.customerName || currentDraft.customerName === "Phone Guest") &&
+      extracted.customerName
+    ) {
+      nextDraft.customerName = extracted.customerName;
+    }
+
+    call.reservationDraft = nextDraft;
+    await call.save();
+
+    console.log("📊 Reservation draft:", {
+      callId,
+      latestUserText,
+      reservationDraft: call.reservationDraft,
+    });
+
+    const { partySize, requestedStart, customerName, customerPhone } =
+      call.reservationDraft;
+
+    if (!partySize || !requestedStart || !customerName) {
+      return { response: aiReply };
+    }
+
+    console.log("📅 Booking intent detected", {
+      callId,
+      partySize,
+      requestedStart,
+      customerName,
+      customerPhone,
+    });
+
     try {
       console.log("🚀 Attempting booking:", {
-  callId,
-  partySize,
-  requestedStart,
-  customerName
-});
+        callId,
+        partySize,
+        requestedStart,
+        customerName,
+        customerPhone,
+      });
+
       const result = await findNearestAvailableSlot({
         businessId: agent.businessId,
         requestedStart,
@@ -315,7 +324,7 @@ console.log("📅 Booking intent detected", {
         agentId: agent._id,
         callId,
         customerName,
-        customerPhone: call?.fromNumber || call?.from || null,
+        customerPhone: customerPhone || null,
         notes: null,
         searchWindowMinutes: 120,
       });
@@ -323,14 +332,23 @@ console.log("📅 Booking intent detected", {
       console.log("AI booking engine result:", result);
 
       if (result && result.success && result.booking) {
-  console.log("✅ Booking saved:", result.booking._id);
+        console.log("✅ Booking saved:", result.booking._id);
 
-  return {
-    response: "Perfect. Your table is confirmed.",
-    end_call: true
-  };
-}
-      
+        call.bookingData = {
+          bookingId: result.booking._id,
+          partySize,
+          requestedStart,
+          customerName,
+          customerPhone: customerPhone || null,
+        };
+
+        await call.save();
+
+        return {
+          response: "Perfect. Your table is confirmed.",
+          end_call: true,
+        };
+      }
 
       if (result?.suggestedTime) {
         const suggestedDate = new Date(result.suggestedTime);
@@ -351,10 +369,10 @@ console.log("📅 Booking intent detected", {
     return { response: aiReply };
   } catch (err) {
     console.error("AI error:", {
-  message: err?.message,
-  stack: err?.stack,
-  body,
-});
+      message: err?.message,
+      stack: err?.stack,
+      body,
+    });
 
     return {
       response: "Sorry, could you repeat that please?",

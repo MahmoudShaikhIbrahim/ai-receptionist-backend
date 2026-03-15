@@ -60,6 +60,28 @@ const CallSchema = new mongoose.Schema(
       default: null,
     },
 
+    reservationDraft: {
+  partySize: {
+    type: Number,
+    default: null,
+  },
+
+  requestedStart: {
+    type: Date,
+    default: null,
+  },
+
+  customerName: {
+    type: String,
+    default: null,
+  },
+
+  customerPhone: {
+    type: String,
+    default: null,
+  },
+},
+
     // 📝 AI outputs
     summary: {
       type: String,
