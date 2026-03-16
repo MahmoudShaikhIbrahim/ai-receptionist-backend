@@ -247,25 +247,31 @@ let draft = call.bookingData || {
 
 const userText = body.latest_user_text || "";
 
-// update draft slots
+// extract slots
 if (!draft.partySize) {
-  draft.partySize = extractPartySizeFromText(userText);
-} else if (!draft.requestedStart) {
-  draft.requestedStart = extractTimeFromText(userText);
-} else if (!draft.customerName) {
-  draft.customerName = extractNameFromText(userText);
+  const size = extractPartySizeFromText(userText);
+  if (size) draft.partySize = size;
 }
 
-// persist draft
+if (!draft.requestedStart) {
+  const time = extractTimeFromText(userText);
+  if (time) draft.requestedStart = time;
+}
+
+if (!draft.customerName) {
+  const name = extractNameFromText(userText);
+  if (name) draft.customerName = name;
+}
+
+// save draft
 await Call.updateOne(
   { _id: call._id },
   { $set: { bookingData: draft } }
 );
 
-// IMPORTANT: keep local state updated
-call.bookingData = draft;
-
 console.log("📊 Reservation draft:", draft);
+
+
 
     const agent = await Agent.findById(call.agentId).lean();
 
