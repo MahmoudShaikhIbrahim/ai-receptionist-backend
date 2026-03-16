@@ -230,14 +230,35 @@ Rules:
       };
     }
 
-    const call = await Call.findOne({
-      callId,
-    });
+  const call = await Call.findOne({
+  $or: [{ callId }, { call_id: callId }]
+});
 
-    if (!call) {
-      console.warn("Call not found:", callId);
-      return { response: aiReply };
-    }
+if (!call) {
+  console.warn("Call not found:", callId);
+  return { response: aiReply };
+}
+
+let draft = call.bookingData || {
+  partySize: null,
+  requestedStart: null,
+  customerName: null
+};
+
+const userText = body.latest_user_text || "";
+
+if (!draft.partySize) {
+  draft.partySize = extractPartySizeFromText(userText);
+} else if (!draft.requestedStart) {
+  draft.requestedStart = extractTimeFromText(userText);
+} else if (!draft.customerName) {
+  draft.customerName = extractNameFromText(userText);
+}
+
+call.bookingData = draft;
+await call.save();
+
+console.log("📊 Reservation draft:", draft);
 
     const agent = await Agent.findById(call.agentId).lean();
 
@@ -291,8 +312,7 @@ Rules:
       reservationDraft: call.reservationDraft,
     });
 
-    const { partySize, requestedStart, customerName, customerPhone } =
-      call.reservationDraft;
+    const { partySize, requestedStart, customerName } = draft;
 
     if (!partySize || !requestedStart || !customerName) {
       return { response: aiReply };
