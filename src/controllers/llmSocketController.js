@@ -247,6 +247,7 @@ let draft = call.bookingData || {
 
 const userText = body.latest_user_text || "";
 
+// update draft slots
 if (!draft.partySize) {
   draft.partySize = extractPartySizeFromText(userText);
 } else if (!draft.requestedStart) {
@@ -255,8 +256,14 @@ if (!draft.partySize) {
   draft.customerName = extractNameFromText(userText);
 }
 
+// persist draft
+await Call.updateOne(
+  { _id: call._id },
+  { $set: { bookingData: draft } }
+);
+
+// IMPORTANT: keep local state updated
 call.bookingData = draft;
-await call.save();
 
 console.log("📊 Reservation draft:", draft);
 
