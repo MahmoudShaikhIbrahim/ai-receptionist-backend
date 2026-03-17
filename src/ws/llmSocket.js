@@ -36,26 +36,28 @@ function handleLLMWebSocket(ws, req) {
 
       let latestUserText = "";
 
-      const transcript = Array.isArray(data.transcript)
-        ? data.transcript
-        : Array.isArray(data.transcript_json)
-        ? data.transcript_json
-        : [];
+const transcript = Array.isArray(data.transcript)
+  ? data.transcript
+  : Array.isArray(data.transcript_json)
+  ? data.transcript_json
+  : [];
 
-      // Extract latest user utterance
-      for (let i = transcript.length - 1; i >= 0; i--) {
-        const utterance = transcript[i];
+for (let i = transcript.length - 1; i >= 0; i--) {
+  const item = transcript[i];
 
-        if (
-          (utterance?.role === "user" || utterance?.role === "caller") &&
-          typeof utterance.content === "string"
-        ) {
-          latestUserText = utterance.content.trim();
-          break;
-        }
-      }
+  if (
+    (item?.role === "user" ||
+     item?.role === "caller" ||
+     item?.speaker === "user") &&
+    typeof item.content === "string" &&
+    item.content.trim().length > 0
+  ) {
+    latestUserText = item.content.trim();
+    break;
+  }
+}
 
-      console.log("🗣 Latest user text:", latestUserText || "(none)");
+console.log("🗣 Latest user text:", latestUserText || "(none)");
       console.log("LATEST USER TEXT:", latestUserText);
       const result = await processLLMMessage(
         {
