@@ -7,30 +7,44 @@ const { wordsToNumbers } = require("words-to-numbers");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
+/**
+ * ================================
+ * NORMALIZATION
+ * ================================
+ */
 function normalizeText(value) {
   if (typeof value !== "string") return "";
 
   const protectedText = value.replace(/\bI\b/g, "__PRONOUN_I__");
   const converted = wordsToNumbers(protectedText.toLowerCase());
-  return String(converted).replace(/__pronoun_i__/g, "i").trim();
+
+  return String(converted)
+    .replace(/__pronoun_i__/g, "i")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
+/**
+ * ================================
+ * EXTRACTION HELPERS (ROBUST)
+ * ================================
+ */
+
 function extractPartySizeFromText(text) {
-  if (!text || typeof text !== "string") return null;
+  if (!text) return null;
 
   const normalized = normalizeText(text);
 
-  const strongPatterns = [
+  const patterns = [
     /table for (\d+)/i,
     /party of (\d+)/i,
-    /for (\d+) people/i,
-    /we are (\d+)/i,
-    /there are (\d+) of us/i,
-    /(\d+)\s+people/i,
-    /(\d+)\s+persons?/i,
+    /for (\d+)/i,
+    /(\d+)\s*(people|persons|guests)/i,
+    /\bwe are (\d+)/i,
+    /\b(\d+)\b/,
   ];
 
-  for (const pattern of strongPatterns) {
+  for (const pattern of patterns) {
     const match = normalized.match(pattern);
     if (match) {
       const value = parseInt(match[1], 10);
@@ -38,40 +52,31 @@ function extractPartySizeFromText(text) {
     }
   }
 
-  const bareNumberMatch = normalized.match(/^\s*(\d{1,2})\s*\.?\s*$/);
-  if (bareNumberMatch) {
-    const value = parseInt(bareNumberMatch[1], 10);
-    if (value >= 1 && value <= 50) return value;
-  }
-
   return null;
 }
 
 function extractTimeFromText(text) {
-  if (!text || typeof text !== "string") return null;
+  if (!text) return null;
 
-  const normalized = text.toLowerCase().trim();
+  const normalized = normalizeText(text);
 
-  const colonMatch = normalized.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
-  const meridiemMatch = normalized.match(/\b(?:at\s+)?(\d{1,2})\s*(am|pm)\b/i);
-  const bareHourMatch = normalized.match(/^(?:at\s+)?(\d{1,2})\.?$/i);
+  /**
+   * Handles:
+   * - "uh maybe at 8 pm"
+   * - "around 7:30"
+   * - "I think 9"
+   * - "at uh... 6"
+   */
 
-  let hour;
-  let minute = 0;
-  let meridiem = null;
+  const match = normalized.match(
+    /\b(?:at\s+|around\s+|maybe\s+|for\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
+  );
 
-  if (colonMatch) {
-    hour = parseInt(colonMatch[1], 10);
-    minute = parseInt(colonMatch[2], 10);
-    meridiem = colonMatch[3] ? colonMatch[3].toLowerCase() : null;
-  } else if (meridiemMatch) {
-    hour = parseInt(meridiemMatch[1], 10);
-    meridiem = meridiemMatch[2].toLowerCase();
-  } else if (bareHourMatch) {
-    hour = parseInt(bareHourMatch[1], 10);
-  } else {
-    return null;
-  }
+  if (!match) return null;
+
+  let hour = parseInt(match[1], 10);
+  let minute = match[2] ? parseInt(match[2], 10) : 0;
+  const meridiem = match[3];
 
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
   if (minute < 0 || minute > 59) return null;
@@ -81,83 +86,48 @@ function extractTimeFromText(text) {
     if (meridiem === "pm" && hour < 12) hour += 12;
     if (meridiem === "am" && hour === 12) hour = 0;
   } else {
-    // bare number like "6" => assume evening reservation by default if 1-11
-    if (hour < 1 || hour > 23) return null;
-    if (hour >= 1 && hour <= 11) {
-      hour += 12;
-    }
+    if (hour >= 1 && hour <= 11) hour += 12;
   }
 
-  const requestedStart = new Date();
-  requestedStart.setHours(hour, minute, 0, 0);
+  const date = new Date();
+  date.setHours(hour, minute, 0, 0);
 
-  return requestedStart;
+  return date;
 }
 
 function extractNameFromText(text) {
-  if (!text || typeof text !== "string") return null;
-
-  const normalized = text.trim();
+  if (!text) return null;
 
   const patterns = [
-    /\bmy name is\s+([a-z][a-z\s'-]{1,49})\b/i,
-    /\bthis is\s+([a-z][a-z\s'-]{1,49})\b/i,
-    /\bit'?s\s+([a-z][a-z\s'-]{1,49})\b/i,
-    /\bi am\s+([a-z][a-z\s'-]{1,49})\b/i,
-    /\bi'm\s+([a-z][a-z\s'-]{1,49})\b/i,
-    /\bname is\s+([a-z][a-z\s'-]{1,49})\b/i,
+    /\bmy name is\s+([a-z\s'-]+)/i,
+    /\bi am\s+([a-z\s'-]+)/i,
+    /\bi'm\s+([a-z\s'-]+)/i,
+    /\bthis is\s+([a-z\s'-]+)/i,
+    /\bit'?s\s+([a-z\s'-]+)/i,
   ];
 
   for (const pattern of patterns) {
-    const match = normalized.match(pattern);
+    const match = text.match(pattern);
     if (match?.[1]) {
-      const cleaned = match[1]
-        .replace(/\s+/g, " ")
-        .trim()
-        .replace(/\b(at|for|on|around|with)\b.*$/i, "")
-        .trim();
+      const cleaned = match[1].trim().split(" ")[0];
 
       if (cleaned.length >= 2) {
-        return cleaned
-          .split(" ")
-          .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-          .join(" ");
+        return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
       }
     }
   }
 
-  // Fallback for simple answer like "Mahmoud" or "Mahmoud Ibrahim"
-  if (/^[a-z][a-z\s'-]{1,49}$/i.test(normalized)) {
-    const cleaned = normalized.replace(/\s+/g, " ").trim();
-
-    const blocked = [
-      "yes",
-      "no",
-      "okay",
-      "ok",
-      "hello",
-      "hi",
-      "bye",
-      "thanks",
-      "thank you",
-      "today",
-      "tomorrow",
-    ];
-
-    if (!blocked.includes(cleaned.toLowerCase())) {
-      return cleaned
-        .split(" ")
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-        .join(" ");
-    }
+  // fallback: single word name
+  if (/^[a-z]{2,}$/i.test(text.trim())) {
+    return text.trim().charAt(0).toUpperCase() + text.trim().slice(1).toLowerCase();
   }
 
   return null;
 }
 
 function looksLikeBookingIntent(text) {
-  if (!text || typeof text !== "string") return false;
-  return /\b(book|booking|reserve|reservation|table)\b/i.test(text);
+  if (!text) return false;
+  return /\b(book|reserve|reservation|table)\b/i.test(text);
 }
 
 function getNextMissingQuestion(draft) {
@@ -176,256 +146,199 @@ function getNextMissingQuestion(draft) {
   return null;
 }
 
+/**
+ * ================================
+ * MAIN CONTROLLER
+ * ================================
+ */
 async function processLLMMessage(body, req) {
   console.log("WEBSOCKET LLM CONTROLLER HIT");
-  console.log("Processing WS body:", JSON.stringify(body));
 
-  const interactionType = body.interaction_type || body.type || "unknown";
+  const interactionType = body.interaction_type || body.type;
 
-  if (interactionType === "ping_pong") {
-    return null;
-  }
+  if (interactionType === "ping_pong") return null;
+  if (interactionType !== "response_required") return null;
 
-  if (interactionType !== "response_required") {
-    console.log("Skipping event:", interactionType);
-    return null;
-  }
-
+  /**
+   * ================================
+   * CALL ID
+   * ================================
+   */
   let callId =
-    body?.call_id ||
-    body?.callId ||
+    body.call_id ||
+    body.callId ||
     body?.metadata?.call_id ||
     null;
 
   if (!callId && req?.url) {
     const parts = req.url.split("/");
     const possibleId = parts[parts.length - 1];
-    if (possibleId && possibleId.startsWith("call_")) {
-      callId = possibleId;
-    }
+    if (possibleId?.startsWith("call_")) callId = possibleId;
   }
 
-  const transcript = Array.isArray(body.transcript)
-    ? body.transcript
-    : Array.isArray(body.transcript_json)
-    ? body.transcript_json
-    : [];
+  if (!callId) {
+    console.warn("No callId");
+    return { response: "Sorry, something went wrong." };
+  }
 
+  /**
+   * ================================
+   * LOAD CALL
+   * ================================
+   */
+  const call = await Call.findOne({
+    $or: [{ callId }, { call_id: callId }],
+  });
+
+  if (!call) {
+    console.warn("Call not found:", callId);
+    return { response: "Sorry, something went wrong." };
+  }
+
+  /**
+   * ================================
+   * USER TEXT
+   * ================================
+   */
   const latestUserText =
     typeof body.latest_user_text === "string"
       ? body.latest_user_text.trim()
       : "";
 
-  const messages = [
-    {
-      role: "system",
-      content: `
-You are a friendly restaurant receptionist.
+  /**
+   * ================================
+   * DRAFT STATE
+   * ================================
+   */
+  let draft = call.bookingData || {
+    partySize: null,
+    requestedStart: null,
+    customerName: null,
+    customerPhone: call.callerNumber || null,
+  };
 
-Your job is to help customers reserve tables.
+  const bookingFlowActive =
+    !!draft.partySize ||
+    !!draft.requestedStart ||
+    !!draft.customerName ||
+    looksLikeBookingIntent(latestUserText);
 
-Rules:
-- Ask only ONE question at a time.
-- Keep responses short and natural.
-- If the customer is booking, collect:
-  1) number of people
-  2) reservation time
-  3) customer name
-- Do not say the table is confirmed unless the system confirms it.
-      `.trim(),
-    },
-  ];
+  /**
+   * ================================
+   * BOOKING FLOW (NO AI HERE)
+   * ================================
+   */
+  if (bookingFlowActive) {
+    const size = extractPartySizeFromText(latestUserText);
+    const time = extractTimeFromText(latestUserText);
+    const name = extractNameFromText(latestUserText);
 
-  for (const item of transcript) {
-    if (!item || typeof item.content !== "string") continue;
+    if (size && !draft.partySize) draft.partySize = size;
+    if (time && !draft.requestedStart) draft.requestedStart = time;
+    if (name && !draft.customerName) draft.customerName = name;
 
-    if (item.role === "user" || item.role === "caller") {
-      messages.push({ role: "user", content: item.content.trim() });
+    await Call.updateOne(
+      { _id: call._id },
+      { $set: { bookingData: draft } }
+    );
+
+    console.log("📊 Draft:", draft);
+
+    const nextQuestion = getNextMissingQuestion(draft);
+
+    if (nextQuestion) {
+      return { response: nextQuestion };
     }
 
-    if (item.role === "assistant" || item.role === "agent") {
-      messages.push({ role: "assistant", content: item.content.trim() });
-    }
-  }
-
-  try {
-    const aiReply = await getAIResponse(messages);
-
-    if (!callId) {
-      console.warn("No callId received in WS payload or URL");
-      return { response: aiReply };
-    }
-
+    /**
+     * ================================
+     * PREVENT DUPLICATE BOOKING
+     * ================================
+     */
     const existingBooking = await Booking.findOne({
       callId,
       status: { $in: ["confirmed", "seated"] },
-    })
-      .sort({ createdAt: -1 })
-      .lean();
+    });
 
     if (existingBooking) {
-      console.log("Booking already exists for call:", callId, existingBooking._id);
       return {
         response: "Your reservation is already confirmed.",
         end_call: true,
       };
     }
 
-    const call = await Call.findOne({
-      $or: [{ callId }, { call_id: callId }],
-    });
+    const agent = await Agent.findById(call.agentId).lean();
 
-    if (!call) {
-      console.warn("Call not found:", callId);
-      return { response: aiReply };
+    if (!agent) {
+      return { response: "Sorry, something went wrong." };
     }
 
-    let draft = call.bookingData || {
-      partySize: null,
-      requestedStart: null,
-      customerName: null,
-      customerPhone: call.callerNumber || null,
-    };
-
-    const bookingFlowActive =
-      looksLikeBookingIntent(latestUserText) ||
-      !!draft.partySize ||
-      !!draft.requestedStart ||
-      !!draft.customerName;
-
-    if (bookingFlowActive) {
-      if (!draft.partySize) {
-        const size = extractPartySizeFromText(latestUserText);
-        if (size) draft.partySize = size;
-      }
-
-      if (!draft.requestedStart) {
-        const time = extractTimeFromText(latestUserText);
-        if (time) draft.requestedStart = time;
-      }
-
-      if (!draft.customerName) {
-        const name = extractNameFromText(latestUserText);
-        if (name) draft.customerName = name;
-      }
-
-      await Call.updateOne(
-        { _id: call._id },
-        { $set: { bookingData: draft } }
-      );
-
-      call.bookingData = draft;
-
-      console.log("📊 Reservation draft:", {
+    /**
+     * ================================
+     * BOOKING ENGINE
+     * ================================
+     */
+    try {
+      const result = await findNearestAvailableSlot({
+        businessId: agent.businessId,
+        requestedStart: draft.requestedStart,
+        durationMinutes: 90,
+        partySize: draft.partySize,
+        source: "ai",
+        agentId: agent._id,
         callId,
-        latestUserText,
-        reservationDraft: draft,
+        customerName: draft.customerName,
+        customerPhone: draft.customerPhone,
       });
 
-      const { partySize, requestedStart, customerName, customerPhone } = draft;
-
-      const nextQuestion = getNextMissingQuestion(draft);
-
-      if (nextQuestion) {
-        return { response: nextQuestion };
-      }
-
-      const agent = await Agent.findById(call.agentId).lean();
-
-      if (!agent) {
-        console.warn("Agent not found:", call.agentId);
-        return { response: aiReply };
-      }
-
-      console.log("📅 Booking intent detected", {
-        callId,
-        partySize,
-        requestedStart,
-        customerName,
-        customerPhone,
-      });
-
-      try {
-        console.log("🚀 Attempting booking:", {
-          callId,
-          partySize,
-          requestedStart,
-          customerName,
-          customerPhone,
-        });
-
-        const result = await findNearestAvailableSlot({
-          businessId: agent.businessId,
-          requestedStart,
-          durationMinutes: 90,
-          partySize,
-          source: "ai",
-          agentId: agent._id,
-          callId,
-          customerName,
-          customerPhone: customerPhone || null,
-          notes: null,
-          searchWindowMinutes: 120,
-        });
-
-        console.log("AI booking engine result:", result);
-
-        if (result && result.success && result.booking) {
-          console.log("✅ Booking saved:", result.booking._id);
-
-          call.bookingData = {
-            bookingId: result.booking._id,
-            partySize,
-            requestedStart,
-            customerName,
-            customerPhone: customerPhone || null,
-          };
-
-          await call.save();
-
-          return {
-            response: "Perfect. Your table is confirmed.",
-            end_call: true,
-          };
-        }
-
-        if (result?.suggestedTime) {
-          const suggestedDate = new Date(result.suggestedTime);
-          const suggestedLabel = suggestedDate.toLocaleTimeString("en-US", {
-            hour: "numeric",
-            minute: "2-digit",
-            hour12: true,
-          });
-
-          return {
-            response: `We are full at that time. Would ${suggestedLabel} work instead?`,
-          };
-        }
+      if (result?.success && result.booking) {
+        console.log("✅ BOOKED:", result.booking._id);
 
         return {
-          response: "I'm sorry, I couldn't confirm the reservation right now. Please try again.",
-        };
-      } catch (bookingError) {
-        console.error("Booking engine error:", bookingError);
-
-        return {
-          response: "I'm sorry, I couldn't confirm the reservation right now. Please try again.",
+          response: "Perfect. Your table is confirmed. We look forward to seeing you.",
+          end_call: true,
         };
       }
+
+      if (result?.suggestedTime) {
+        const suggested = new Date(result.suggestedTime).toLocaleTimeString(
+          "en-US",
+          { hour: "numeric", minute: "2-digit", hour12: true }
+        );
+
+        return {
+          response: `We are full at that time. Would ${suggested} work instead?`,
+        };
+      }
+
+      return {
+        response: "I'm sorry, I couldn't confirm the reservation right now.",
+      };
+    } catch (err) {
+      console.error("Booking error:", err);
+      return {
+        response: "I'm sorry, something went wrong while booking.",
+      };
     }
-
-    return { response: aiReply };
-  } catch (err) {
-    console.error("AI error:", {
-      message: err?.message,
-      stack: err?.stack,
-      body,
-    });
-
-    return {
-      response: "Sorry, could you repeat that please?",
-    };
   }
+
+  /**
+   * ================================
+   * NON-BOOKING → AI
+   * ================================
+   */
+  const aiReply = await getAIResponse([
+    {
+      role: "system",
+      content: "You are a friendly restaurant receptionist.",
+    },
+    {
+      role: "user",
+      content: latestUserText,
+    },
+  ]);
+
+  return { response: aiReply };
 }
 
 module.exports = { processLLMMessage };
