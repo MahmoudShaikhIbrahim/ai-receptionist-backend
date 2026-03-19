@@ -1,3 +1,5 @@
+// src/models/Call.js
+
 const mongoose = require("mongoose");
 
 const CallSchema = new mongoose.Schema(
@@ -55,32 +57,13 @@ const CallSchema = new mongoose.Schema(
       default: null,
     },
 
-    bookingData: {
-      type: mongoose.Schema.Types.Mixed,
-      default: null,
+    // ✅ Single unified booking draft (replaces bookingData + reservationDraft)
+    bookingDraft: {
+      partySize: { type: Number, default: null },
+      requestedStart: { type: Date, default: null },
+      customerName: { type: String, default: null },
+      customerPhone: { type: String, default: null },
     },
-
-    reservationDraft: {
-  partySize: {
-    type: Number,
-    default: null,
-  },
-
-  requestedStart: {
-    type: Date,
-    default: null,
-  },
-
-  customerName: {
-    type: String,
-    default: null,
-  },
-
-  customerPhone: {
-    type: String,
-    default: null,
-  },
-},
 
     // 📝 AI outputs
     summary: {
@@ -111,7 +94,7 @@ const CallSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    strict: true, // ⛔ prevents silent garbage fields
+    strict: true,
   }
 );
 

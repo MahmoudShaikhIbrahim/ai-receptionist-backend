@@ -100,16 +100,14 @@ function extractNameFromText(text) {
 
   const normalized = text.trim();
 
-  // If user just says name directly (VERY IMPORTANT FIX)
-  if (/^[a-zA-Z]{2,}$/.test(normalized)) {
-    return normalized.charAt(0).toUpperCase() + normalized.slice(1).toLowerCase();
-  }
-
   const patterns = [
-    /\bmy name is\s+([a-z\s'-]+)/i,
-    /\bi am\s+([a-z\s'-]+)/i,
-    /\bi'm\s+([a-z\s'-]+)/i,
-    /\bthis is\s+([a-z\s'-]+)/i,
+    /\bmy name is\s+([a-z][a-z\s'-]{1,30})/i,
+    /\bi am\s+([a-z][a-z\s'-]{1,30})/i,
+    /\bi'm\s+([a-z][a-z\s'-]{1,30})/i,
+    /\bthis is\s+([a-z][a-z\s'-]{1,30})/i,
+    /\bname[''s]*\s+(?:is\s+)?([a-z][a-z\s'-]{1,30})/i,
+    /\bput it under\s+([a-z][a-z\s'-]{1,30})/i,
+    /\bunder\s+([a-z][a-z\s'-]{1,30})/i,
   ];
 
   for (const pattern of patterns) {
@@ -117,10 +115,17 @@ function extractNameFromText(text) {
     if (match?.[1]) {
       return match[1]
         .trim()
-        .split(" ")[0]
-        .replace(/[^a-z'-]/gi, "")
-        .replace(/^./, (c) => c.toUpperCase());
+        .replace(/[^a-z\s'-]/gi, "")
+        .replace(/\b\w/g, (c) => c.toUpperCase());
     }
+  }
+
+  // Fallback: if entire message is just a name (1-3 words, no digits)
+  if (/^[a-zA-Z][a-zA-Z\s'-]{1,40}$/.test(normalized) &&
+      normalized.split(" ").length <= 3) {
+    return normalized
+      .trim()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   return null;
@@ -211,12 +216,17 @@ async function processLLMMessage(body, req) {
    * DRAFT STATE
    * ================================
    */
-  let draft = call.bookingData || {
-    partySize: null,
-    requestedStart: null,
-    customerName: null,
-    customerPhone: call.callerNumber || null,
-  };
+  let draft = call.bookingDraft || {
+  partySize: null,
+  requestedStart: null,
+  customerName: null,
+  customerPhone: null,
+};
+
+// Always try to recover phone from call record
+if (!draft.customerPhone && call.callerNumber) {
+  draft.customerPhone = call.callerNumber;
+}
 
   const bookingFlowActive =
     !!draft.partySize ||
@@ -239,9 +249,16 @@ async function processLLMMessage(body, req) {
     if (name && !draft.customerName) draft.customerName = name;
 
     await Call.updateOne(
-      { _id: call._id },
-      { $set: { bookingData: draft } }
-    );
+  { _id: call._id },
+  {
+    $set: {
+      "bookingDraft.partySize": draft.partySize,
+      "bookingDraft.requestedStart": draft.requestedStart,
+      "bookingDraft.customerName": draft.customerName,
+      "bookingDraft.customerPhone": draft.customerPhone,
+    }
+  }
+);
 
     console.log("📊 Draft:", draft);
 

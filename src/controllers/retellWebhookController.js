@@ -85,6 +85,12 @@ exports.handleRetellWebhook = async (req, res) => {
           businessId: agent.businessId,
           agentId: agent._id,
           retellAgentId,
+          bookingDraft: {          // ✅ ADD THIS
+    partySize: null,
+    requestedStart: null,
+    customerName: null,
+    customerPhone: null,
+  },
         },
 
         // ✅ UPDATABLE FIELDS

@@ -2,6 +2,10 @@
 
 const { processLLMMessage } = require("../controllers/llmSocketController");
 
+/**
+ * Extract the latest user text safely from Retell transcript
+ * Handles missing roles / delayed tagging / last-item fallback
+ */
 function extractLatestUserText(data) {
   const transcript = Array.isArray(data?.transcript)
     ? data.transcript
@@ -9,13 +13,10 @@ function extractLatestUserText(data) {
     ? data.transcript_json
     : [];
 
+  // 🔥 Traverse from newest → oldest
   for (let i = transcript.length - 1; i >= 0; i--) {
     const item = transcript[i];
     if (!item || typeof item !== "object") continue;
-
-    const role = typeof item.role === "string" ? item.role.toLowerCase() : "";
-    const speaker =
-      typeof item.speaker === "string" ? item.speaker.toLowerCase() : "";
 
     const text =
       typeof item.content === "string"
@@ -24,15 +25,29 @@ function extractLatestUserText(data) {
         ? item.text.trim()
         : "";
 
-    const isUser =
+    if (!text) continue;
+
+    const role = (item.role || "").toLowerCase();
+    const speaker = (item.speaker || "").toLowerCase();
+
+    // ✅ Strong user match
+    if (
       role === "user" ||
       role === "caller" ||
       role === "customer" ||
       speaker === "user" ||
       speaker === "caller" ||
-      speaker === "customer";
+      speaker === "customer"
+    ) {
+      return text;
+    }
 
-    if (isUser && text.length > 0) {
+    // 🔥 Fallback: last message (very important fix)
+    if (
+      i === transcript.length - 1 &&
+      role !== "agent" &&
+      role !== "assistant"
+    ) {
       return text;
     }
   }
@@ -40,6 +55,9 @@ function extractLatestUserText(data) {
   return "";
 }
 
+/**
+ * Safe WebSocket send
+ */
 function safeSend(ws, payload) {
   if (!ws || ws.readyState !== ws.OPEN) {
     console.warn("⚠️ WebSocket is not open. Skipping send.");
@@ -59,8 +77,7 @@ function handleLLMWebSocket(ws, req) {
 
   const processedResponseIds = new Set();
 
-  // Optional greeting.
-  // Keep this only if Retell is NOT already sending an opening message itself.
+  // ✅ Initial greeting (keep or remove depending on Retell config)
   safeSend(ws, {
     response_id: 0,
     content: "Hello! Welcome to our restaurant. How can I help you today?",
@@ -78,7 +95,6 @@ function handleLLMWebSocket(ws, req) {
       data = JSON.parse(messageStr);
     } catch (parseErr) {
       console.error("❌ Failed to parse Retell message:", parseErr.message);
-      console.error("Raw message:", messageStr);
 
       safeSend(ws, {
         response_id: 0,
@@ -93,22 +109,25 @@ function handleLLMWebSocket(ws, req) {
       const interactionType = data?.interaction_type;
       const responseId = data?.response_id ?? 0;
 
-      // Prevent duplicate processing of the same response turn
+      // ❌ Ignore everything except response_required
+      if (interactionType !== "response_required") {
+        console.log("Skipping event:", interactionType);
+        return;
+      }
+
+      // Prevent duplicate processing
       if (processedResponseIds.has(responseId)) {
         console.log(`⏭ Skipping duplicate response_id: ${responseId}`);
         return;
       }
 
-      // Only process turns where Retell expects a response
-      if (
-        interactionType !== "response_required" &&
-        interactionType !== "reminder_required"
-      ) {
-        console.log("Skipping event:", interactionType);
-        return;
-      }
-
       processedResponseIds.add(responseId);
+
+      // 🔥 DEBUG (keep for now)
+      console.log(
+        "📜 FULL TRANSCRIPT:",
+        JSON.stringify(data.transcript, null, 2)
+      );
 
       const latestUserText = extractLatestUserText(data);
 
@@ -158,7 +177,6 @@ function handleLLMWebSocket(ws, req) {
       console.log("☎️ End call:", shouldEndCall);
     } catch (err) {
       console.error("❌ Error processing message:", err.message || err);
-      console.error("Raw message:", messageStr);
 
       safeSend(ws, {
         response_id: data?.response_id ?? 0,

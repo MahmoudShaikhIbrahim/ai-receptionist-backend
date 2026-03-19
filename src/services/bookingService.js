@@ -290,7 +290,7 @@ async function findNearestAvailableSlot({
 
     return {
       success: true,
-      booking: directBooking.toObject(),
+      booking: directBooking,
     };
   }
 
