@@ -10,7 +10,7 @@ const { findNearestAvailableSlot } = require("../services/bookingService");
 /**
  * ================================
  * NORMALIZATION
- * ================================
+ * =============================
  */
 function normalizeText(value) {
   if (typeof value !== "string") return "";
