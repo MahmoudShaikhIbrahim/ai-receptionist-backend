@@ -189,7 +189,27 @@ async function processLLMMessage(body, req) {
    * RECOVER PHONE FROM RETELL BODY
    * ================================
    */
-  
+  const phoneFromBody =
+    body?.call?.from_number ||
+    body?.from_number ||
+    body?.caller_id ||
+    body?.call?.caller_id ||
+    null;
+
+  console.log("📞 Phone fields from body:", {
+    call_from_number: body?.call?.from_number,
+    body_from_number: body?.from_number,
+    body_caller_id: body?.caller_id,
+    call_caller_id: body?.call?.caller_id,
+  });
+
+  if (!call.callerNumber && phoneFromBody) {
+    await Call.updateOne(
+      { _id: call._id },
+      { $set: { callerNumber: phoneFromBody } }
+    );
+    call.callerNumber = phoneFromBody;
+  }
 
   /**
    * ================================
