@@ -98,28 +98,29 @@ function extractTimeFromText(text) {
 function extractNameFromText(text) {
   if (!text) return null;
 
+  const normalized = text.trim();
+
+  // If user just says name directly (VERY IMPORTANT FIX)
+  if (/^[a-zA-Z]{2,}$/.test(normalized)) {
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1).toLowerCase();
+  }
+
   const patterns = [
     /\bmy name is\s+([a-z\s'-]+)/i,
     /\bi am\s+([a-z\s'-]+)/i,
     /\bi'm\s+([a-z\s'-]+)/i,
     /\bthis is\s+([a-z\s'-]+)/i,
-    /\bit'?s\s+([a-z\s'-]+)/i,
   ];
 
   for (const pattern of patterns) {
-    const match = text.match(pattern);
+    const match = normalized.match(pattern);
     if (match?.[1]) {
-      const cleaned = match[1].trim().split(" ")[0];
-
-      if (cleaned.length >= 2) {
-        return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase();
-      }
+      return match[1]
+        .trim()
+        .split(" ")[0]
+        .replace(/[^a-z'-]/gi, "")
+        .replace(/^./, (c) => c.toUpperCase());
     }
-  }
-
-  // fallback: single word name
-  if (/^[a-z]{2,}$/i.test(text.trim())) {
-    return text.trim().charAt(0).toUpperCase() + text.trim().slice(1).toLowerCase();
   }
 
   return null;
@@ -244,11 +245,19 @@ async function processLLMMessage(body, req) {
 
     console.log("📊 Draft:", draft);
 
-    const nextQuestion = getNextMissingQuestion(draft);
+    // 🚫 STRICT STEP-BY-STEP FLOW
 
-    if (nextQuestion) {
-      return { response: nextQuestion };
-    }
+if (!draft.partySize) {
+  return { response: "How many people will be in your party?" };
+}
+
+if (!draft.requestedStart) {
+  return { response: "What time would you like to reserve the table?" };
+}
+
+if (!draft.customerName) {
+  return { response: "What name should I put on the reservation?" };
+}
 
     /**
      * ================================
