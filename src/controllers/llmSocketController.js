@@ -26,23 +26,23 @@ function normalizeText(value) {
 
 /**
  * ================================
- * EXTRACTION HELPERS (ROBUST)
+ * EXTRACTION HELPERS
  * ================================
  */
-
 function extractPartySizeFromText(text) {
   if (!text) return null;
 
   const normalized = normalizeText(text);
 
+  // ✅ Removed greedy \b(\d+)\b fallback — was matching "a" → 1
   const patterns = [
-  /table for (\d+)/i,
-  /party of (\d+)/i,
-  /for (\d+)/i,
-  /(\d+)\s*(people|persons|guests)/i,
-  /\bwe are (\d+)/i,
-  /\bjust (\d+)\b/i,
-];
+    /table for (\d+)/i,
+    /party of (\d+)/i,
+    /for (\d+)/i,
+    /(\d+)\s*(people|persons|guests)/i,
+    /\bwe are (\d+)/i,
+    /\bjust (\d+)\b/i,
+  ];
 
   for (const pattern of patterns) {
     const match = normalized.match(pattern);
@@ -59,14 +59,6 @@ function extractTimeFromText(text) {
   if (!text) return null;
 
   const normalized = normalizeText(text);
-
-  /**
-   * Handles:
-   * - "uh maybe at 8 pm"
-   * - "around 7:30"
-   * - "I think 9"
-   * - "at uh... 6"
-   */
 
   const match = normalized.match(
     /\b(?:at\s+|around\s+|maybe\s+|for\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
@@ -85,15 +77,13 @@ function extractTimeFromText(text) {
     if (hour < 1 || hour > 12) return null;
     if (meridiem === "pm" && hour < 12) hour += 12;
     if (meridiem === "am" && hour === 12) hour = 0;
-// ✅ AFTER
-} else {
-  // No meridiem — only accept if it looks like a plausible hour someone would say
-  // Require at least 2 digits OR a minute component to avoid matching stray "1"s
-  const hasMinute = !!match[2];
-  const isPlausibleHour = hour >= 10 || hasMinute; // "10", "11", "7:30" etc
-  if (!isPlausibleHour) return null;
-  if (hour >= 1 && hour <= 11) hour += 12;
-}
+  } else {
+    // ✅ Only accept unambiguous hours — require 2 digits or a minute component
+    const hasMinute = !!match[2];
+    const isPlausibleHour = hour >= 10 || hasMinute;
+    if (!isPlausibleHour) return null;
+    if (hour >= 1 && hour <= 11) hour += 12;
+  }
 
   const date = new Date();
   date.setHours(hour, minute, 0, 0);
@@ -107,13 +97,14 @@ function extractNameFromText(text) {
   const normalized = text.trim();
 
   const patterns = [
-    /\bmy name is\s+([a-z][a-z\s'-]{1,30})/i,
-    /\bi am\s+([a-z][a-z\s'-]{1,30})/i,
-    /\bi'm\s+([a-z][a-z\s'-]{1,30})/i,
-    /\bthis is\s+([a-z][a-z\s'-]{1,30})/i,
-    /\bname[''s]*\s+(?:is\s+)?([a-z][a-z\s'-]{1,30})/i,
-    /\bput it under\s+([a-z][a-z\s'-]{1,30})/i,
-    /\bunder\s+([a-z][a-z\s'-]{1,30})/i,
+    /\bmy name is\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bi am\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bi'm\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bthis is\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bname[''s]*\s+(?:is\s+)?([a-z][a-z\s'-]{1,40})/i,
+    /\bput it under\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bunder\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bbook.*under\s+([a-z][a-z\s'-]{1,40})/i,
   ];
 
   for (const pattern of patterns) {
@@ -126,9 +117,11 @@ function extractNameFromText(text) {
     }
   }
 
-  // Fallback: if entire message is just a name (1-3 words, no digits)
-  if (/^[a-zA-Z][a-zA-Z\s'-]{1,40}$/.test(normalized) &&
-      normalized.split(" ").length <= 3) {
+  // Fallback: entire message is just a name (1-3 words, letters only)
+  if (
+    /^[a-zA-Z][a-zA-Z\s'-]{1,40}$/.test(normalized) &&
+    normalized.split(" ").length <= 3
+  ) {
     return normalized
       .trim()
       .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -142,29 +135,13 @@ function looksLikeBookingIntent(text) {
   return /\b(book|reserve|reservation|table)\b/i.test(text);
 }
 
-function getNextMissingQuestion(draft) {
-  if (!draft.partySize) {
-    return "How many people will be in your party?";
-  }
-
-  if (!draft.requestedStart) {
-    return "What time would you like to reserve the table?";
-  }
-
-  if (!draft.customerName) {
-    return "What name should I put on the reservation?";
-  }
-
-  return null;
-}
-
 /**
  * ================================
  * MAIN CONTROLLER
  * ================================
  */
 async function processLLMMessage(body, req) {
-  console.log("WEBSOCKET LLM CONTROLLER HIT");
+  console.log("🎯 WEBSOCKET LLM CONTROLLER HIT");
 
   const interactionType = body.interaction_type || body.type;
 
@@ -189,7 +166,7 @@ async function processLLMMessage(body, req) {
   }
 
   if (!callId) {
-    console.warn("No callId");
+    console.warn("⚠️ No callId found");
     return { response: "Sorry, something went wrong." };
   }
 
@@ -203,8 +180,35 @@ async function processLLMMessage(body, req) {
   });
 
   if (!call) {
-    console.warn("Call not found:", callId);
+    console.warn("⚠️ Call not found:", callId);
     return { response: "Sorry, something went wrong." };
+  }
+
+  /**
+   * ================================
+   * RECOVER PHONE FROM RETELL BODY
+   * ================================
+   */
+  const phoneFromBody =
+    body?.call?.from_number ||
+    body?.from_number ||
+    body?.caller_id ||
+    body?.call?.caller_id ||
+    null;
+
+  console.log("📞 Phone fields from body:", {
+    call_from_number: body?.call?.from_number,
+    body_from_number: body?.from_number,
+    body_caller_id: body?.caller_id,
+    call_caller_id: body?.call?.caller_id,
+  });
+
+  if (!call.callerNumber && phoneFromBody) {
+    await Call.updateOne(
+      { _id: call._id },
+      { $set: { callerNumber: phoneFromBody } }
+    );
+    call.callerNumber = phoneFromBody;
   }
 
   /**
@@ -222,17 +226,12 @@ async function processLLMMessage(body, req) {
    * DRAFT STATE
    * ================================
    */
-  let draft = call.bookingDraft || {
-  partySize: null,
-  requestedStart: null,
-  customerName: null,
-  customerPhone: null,
-};
-
-// Always try to recover phone from call record
-if (!draft.customerPhone && call.callerNumber) {
-  draft.customerPhone = call.callerNumber;
-}
+  let draft = {
+    partySize: call.bookingDraft?.partySize ?? null,
+    requestedStart: call.bookingDraft?.requestedStart ?? null,
+    customerName: call.bookingDraft?.customerName ?? null,
+    customerPhone: call.bookingDraft?.customerPhone ?? call.callerNumber ?? null,
+  };
 
   const bookingFlowActive =
     !!draft.partySize ||
@@ -242,7 +241,7 @@ if (!draft.customerPhone && call.callerNumber) {
 
   /**
    * ================================
-   * BOOKING FLOW (NO AI HERE)
+   * BOOKING FLOW
    * ================================
    */
   if (bookingFlowActive) {
@@ -255,32 +254,35 @@ if (!draft.customerPhone && call.callerNumber) {
     if (name && !draft.customerName) draft.customerName = name;
 
     await Call.updateOne(
-  { _id: call._id },
-  {
-    $set: {
-      "bookingDraft.partySize": draft.partySize,
-      "bookingDraft.requestedStart": draft.requestedStart,
-      "bookingDraft.customerName": draft.customerName,
-      "bookingDraft.customerPhone": draft.customerPhone,
+      { _id: call._id },
+      {
+        $set: {
+          "bookingDraft.partySize": draft.partySize,
+          "bookingDraft.requestedStart": draft.requestedStart,
+          "bookingDraft.customerName": draft.customerName,
+          "bookingDraft.customerPhone": draft.customerPhone,
+        },
+      }
+    );
+
+    console.log("📋 Draft after update:", draft);
+
+    /**
+     * ================================
+     * STRICT STEP-BY-STEP QUESTIONS
+     * ================================
+     */
+    if (!draft.partySize) {
+      return { response: "How many people will be dining?" };
     }
-  }
-);
 
-    console.log("📊 Draft:", draft);
+    if (!draft.requestedStart) {
+      return { response: "What time would you like to reserve the table?" };
+    }
 
-    // 🚫 STRICT STEP-BY-STEP FLOW
-
-if (!draft.partySize) {
-  return { response: "How many people will be in your party?" };
-}
-
-if (!draft.requestedStart) {
-  return { response: "What time would you like to reserve the table?" };
-}
-
-if (!draft.customerName) {
-  return { response: "What name should I put on the reservation?" };
-}
+    if (!draft.customerName) {
+      return { response: "What name should I put the reservation under?" };
+    }
 
     /**
      * ================================
@@ -294,7 +296,7 @@ if (!draft.customerName) {
 
     if (existingBooking) {
       return {
-        response: "Your reservation is already confirmed.",
+        response: `Your reservation is already confirmed under ${draft.customerName}. We look forward to seeing you!`,
         end_call: true,
       };
     }
@@ -302,7 +304,7 @@ if (!draft.customerName) {
     const agent = await Agent.findById(call.agentId).lean();
 
     if (!agent) {
-      return { response: "Sorry, something went wrong." };
+      return { response: "Sorry, something went wrong finding the restaurant." };
     }
 
     /**
@@ -324,10 +326,29 @@ if (!draft.customerName) {
       });
 
       if (result?.success && result.booking) {
-        console.log("✅ BOOKED:", result.booking._id);
+        console.log("✅ Booking confirmed:", result.booking._id);
+
+        await Call.updateOne(
+          { _id: call._id },
+          {
+            $set: {
+              "bookingDraft.partySize": null,
+              "bookingDraft.requestedStart": null,
+              "bookingDraft.customerName": null,
+            },
+          }
+        );
+
+        const timeString = new Date(
+          result.booking.startIso
+        ).toLocaleTimeString("en-US", {
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+        });
 
         return {
-          response: "Perfect. Your table is confirmed. We look forward to seeing you.",
+          response: `Perfect! Your table for ${draft.partySize} is confirmed at ${timeString} under ${draft.customerName}. We look forward to seeing you!`,
           end_call: true,
         };
       }
@@ -339,38 +360,41 @@ if (!draft.customerName) {
         );
 
         return {
-          response: `We are full at that time. Would ${suggested} work instead?`,
+          response: `We're fully booked at that time. Would ${suggested} work for you instead?`,
         };
       }
 
       return {
-        response: "I'm sorry, I couldn't confirm the reservation right now.",
+        response:
+          "I'm sorry, we don't have availability for that time. Would you like to try a different time?",
       };
     } catch (err) {
-      console.error("Booking error:", err);
+      console.error("❌ Booking error:", err);
       return {
-        response: "I'm sorry, something went wrong while booking.",
+        response:
+          "I'm sorry, something went wrong while making the reservation. Please try again.",
       };
     }
   }
 
   /**
    * ================================
-   * NON-BOOKING → AI
+   * NON-BOOKING → AI FALLBACK
    * ================================
    */
   const aiReply = await getAIResponse([
     {
       role: "system",
-      content: "You are a friendly restaurant receptionist.",
+      content:
+        "You are a friendly and professional restaurant receptionist. Keep responses short and natural, suitable for a phone call. If the customer wants to make a reservation, let them know you can help with that.",
     },
     {
       role: "user",
-      content: latestUserText,
+      content: latestUserText || "Hello",
     },
   ]);
 
-  return { response: aiReply };
+  return { response: aiReply || "How can I help you today?" };
 }
 
 module.exports = { processLLMMessage };
