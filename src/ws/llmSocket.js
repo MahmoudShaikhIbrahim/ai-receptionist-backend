@@ -123,11 +123,7 @@ function handleLLMWebSocket(ws, req) {
 
       processedResponseIds.add(responseId);
 
-      // 🔥 DEBUG (keep for now)
-      console.log(
-        "📜 FULL TRANSCRIPT:",
-        JSON.stringify(data.transcript, null, 2)
-      );
+    
 
       const latestUserText = extractLatestUserText(data);
 

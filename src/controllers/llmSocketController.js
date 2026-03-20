@@ -78,11 +78,9 @@ function extractTimeFromText(text) {
     if (meridiem === "pm" && hour < 12) hour += 12;
     if (meridiem === "am" && hour === 12) hour = 0;
   } else {
-    // ✅ Only accept unambiguous hours — require 2 digits or a minute component
-    const hasMinute = !!match[2];
-    const isPlausibleHour = hour >= 10 || hasMinute;
-    if (!isPlausibleHour) return null;
+    // Assume PM for restaurant hours
     if (hour >= 1 && hour <= 11) hour += 12;
+    if (hour === 0) return null;
   }
 
   const date = new Date();
@@ -117,10 +115,11 @@ function extractNameFromText(text) {
     }
   }
 
-  // Fallback: entire message is just a name (1-3 words, letters only)
+// Fallback: entire message is a name (1-3 words, letters only)
   if (
-    /^[a-zA-Z][a-zA-Z\s'-]{1,40}$/.test(normalized) &&
-    normalized.split(" ").length <= 3
+    /^[a-zA-Z][a-zA-Z\s'-]{0,40}$/.test(normalized) &&
+    normalized.split(" ").length <= 3 &&
+    normalized.length >= 2
   ) {
     return normalized
       .trim()
@@ -226,11 +225,12 @@ async function processLLMMessage(body, req) {
    * DRAFT STATE
    * ================================
    */
+const freshCall = await Call.findOne({ _id: call._id }).lean();
   let draft = {
-    partySize: call.bookingDraft?.partySize ?? null,
-    requestedStart: call.bookingDraft?.requestedStart ?? null,
-    customerName: call.bookingDraft?.customerName ?? null,
-    customerPhone: call.bookingDraft?.customerPhone ?? call.callerNumber ?? null,
+    partySize: freshCall.bookingDraft?.partySize ?? null,
+    requestedStart: freshCall.bookingDraft?.requestedStart ?? null,
+    customerName: freshCall.bookingDraft?.customerName ?? null,
+    customerPhone: freshCall.bookingDraft?.customerPhone ?? freshCall.callerNumber ?? null,
   };
 
   const bookingFlowActive =
