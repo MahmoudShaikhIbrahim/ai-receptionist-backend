@@ -28,9 +28,6 @@ const server = http.createServer(app);
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// Connect to MongoDB
-connectDB();
-
 // =====================
 // ROUTES
 // =====================
@@ -54,7 +51,6 @@ const wss = new WebSocket.Server({ server });
 wss.on("connection", (ws, req) => {
   const url = req.url || "";
 
-  // Accept Retell dynamic websocket paths
   const validPath =
     url.startsWith("/llm/respond") ||
     url.startsWith("/llm/call_") ||
@@ -82,14 +78,26 @@ wss.on("error", (error) => {
 });
 
 // =====================
-// START SERVER
+// START SERVER (FIXED)
 // =====================
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(
-    `WebSocket listening at wss://your-domain.up.railway.app/llm/respond`
-  );
-  console.log("Ready for Retell Custom LLM connections");
-});
+async function startServer() {
+  try {
+    // 🔥 CRITICAL: WAIT for MongoDB before starting anything
+    await connectDB();
+
+    server.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(
+        `WebSocket listening at wss://your-domain.up.railway.app/llm/respond`
+      );
+      console.log("Ready for Retell Custom LLM connections");
+    });
+  } catch (err) {
+    console.error("❌ Failed to start server:", err.message);
+    process.exit(1);
+  }
+}
+
+startServer();

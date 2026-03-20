@@ -2,20 +2,36 @@ const mongoose = require("mongoose");
 
 async function connectDB() {
   try {
-    const uri = process.env.MONGO_URI;
+    console.log("🔗 Connecting to MongoDB...");
 
-    if (!uri) {
-      throw new Error("❌ MONGO_URI is missing from environment variables!");
-    }
-
-    await mongoose.connect(uri, {
-      dbName: "ai-receptionist-db", // 🔒 FORCE correct database
+    await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 5000, // fail fast if cannot connect
+      socketTimeoutMS: 45000,        // keep socket alive
+      maxPoolSize: 5,                // 🔥 limit connections (VERY IMPORTANT)
     });
 
-    console.log("✅ MongoDB connected to ai-receptionist-db");
-  } catch (error) {
-    console.error("❌ MongoDB Connection Error:", error.message);
-    process.exit(1);
+    console.log("✅ MongoDB connected");
+
+    // =========================
+    // Runtime connection events
+    // =========================
+    mongoose.connection.on("error", (err) => {
+      console.error("❌ MongoDB runtime error:", err.message);
+    });
+
+    mongoose.connection.on("disconnected", () => {
+      console.warn("⚠️ MongoDB disconnected");
+    });
+
+    mongoose.connection.on("reconnected", () => {
+      console.log("🔄 MongoDB reconnected");
+    });
+
+  } catch (err) {
+    console.error("❌ MongoDB connection error:", err.message);
+
+    // 🔥 CRITICAL: stop app if DB fails
+    throw err;
   }
 }
 
