@@ -15,7 +15,10 @@ const { findNearestAvailableSlot } = require("../services/bookingService");
 function normalizeText(value) {
   if (typeof value !== "string") return "";
 
-  const protectedText = value.replace(/\bI\b/g, "__PRONOUN_I__");
+  // ✅ Strip trailing punctuation BEFORE words-to-numbers conversion
+  const cleaned = value.replace(/[.,!?]+$/, "").trim();
+  
+  const protectedText = cleaned.replace(/\bI\b/g, "__PRONOUN_I__");
   const converted = wordsToNumbers(protectedText.toLowerCase());
 
   return String(converted)
