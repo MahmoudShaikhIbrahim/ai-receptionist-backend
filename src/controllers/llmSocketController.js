@@ -15,9 +15,9 @@ const { findNearestAvailableSlot } = require("../services/bookingService");
 function normalizeText(value) {
   if (typeof value !== "string") return "";
 
-  // ✅ Strip trailing punctuation BEFORE words-to-numbers conversion
-  const cleaned = value.replace(/[.,!?]+$/, "").trim();
-  
+  // Strip trailing punctuation BEFORE any conversion
+  const cleaned = value.replace(/[.,!?;:]+$/, "").trim();
+
   const protectedText = cleaned.replace(/\bI\b/g, "__PRONOUN_I__");
   const converted = wordsToNumbers(protectedText.toLowerCase());
 
@@ -27,26 +27,35 @@ function normalizeText(value) {
     .trim();
 }
 
-/**
- * ================================
- * EXTRACTION HELPERS
- * ================================
- */
 function extractPartySizeFromText(text) {
   if (!text) return null;
 
-  const normalized = normalizeText(text);
+  // Manual word-to-number map — no library needed
+  const wordMap = {
+    one: 1, two: 2, three: 3, four: 4, five: 5,
+    six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+    eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+    sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+  };
+
+  // Normalize: lowercase, strip punctuation
+  const raw = text.toLowerCase().replace(/[.,!?;:]+/g, "").trim();
+
+  // Replace word numbers with digits
+  let normalized = raw;
+  for (const [word, num] of Object.entries(wordMap)) {
+    normalized = normalized.replace(new RegExp(`\\b${word}\\b`, "g"), String(num));
+  }
 
   const patterns = [
     /table for (\d+)/i,
     /party of (\d+)/i,
-    /for (\d+)/i,
+    /\bfor (\d+)/i,
     /(\d+)\s*(people|persons|guests|pax)/i,
     /\bwe are (\d+)/i,
     /\bjust (\d+)\b/i,
     /\b(\d+)\s+of us\b/i,
-    // Standalone number — covers "4", "four", "2.", etc.
-    /^\s*(\d+)\s*[.,]?\s*$/,
+    /^\s*(\d+)\s*$/,          // bare number like "4" or "four" (after word replacement)
   ];
 
   for (const pattern of patterns) {
