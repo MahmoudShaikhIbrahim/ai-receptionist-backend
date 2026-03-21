@@ -38,11 +38,12 @@ function extractPartySizeFromText(text) {
     /table for (\d+)/i,
     /party of (\d+)/i,
     /for (\d+)/i,
-    /(\d+)\s*(people|persons|guests)/i,
+    /(\d+)\s*(people|persons|guests|pax)/i,
     /\bwe are (\d+)/i,
     /\bjust (\d+)\b/i,
-    // ✅ FIX 1: Standalone number as last fallback (e.g. "Two." → "2." after wordsToNumbers)
-    /^\s*(\d+)\s*\.?\s*$/,
+    /\b(\d+)\s+of us\b/i,
+    // Standalone number — covers "4", "four", "2.", etc.
+    /^\s*(\d+)\s*[.,]?\s*$/,
   ];
 
   for (const pattern of patterns) {
@@ -61,17 +62,15 @@ function extractTimeFromText(text) {
 
   const normalized = normalizeText(text);
 
-  // ✅ FIX 2: Only match a time if it has context (at/around/etc.) OR explicit AM/PM.
-  // A bare number like "1" by itself will NOT match here — it must have a prefix word
-  // or AM/PM. Exception: we also allow bare numbers 1–11 with no AM/PM only when
-  // accompanied by a time-context word, and assume PM for restaurant hours.
+  // Priority 1: context word + number + optional AM/PM  (e.g. "at 7", "around 8pm")
+  // Priority 2: number + explicit AM/PM  (e.g. "7pm", "1:30am")
+  // Priority 3: bare number 1–12 alone is accepted and assumed PM (e.g. caller says just "7")
   const match =
-    // Priority 1: context word + number + optional AM/PM  (e.g. "at 1", "around 7pm")
     normalized.match(
       /\b(?:at|around|maybe|for)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
     ) ||
-    // Priority 2: number + explicit AM/PM, no context word needed  (e.g. "7pm", "1:30am")
-    normalized.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+    normalized.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i) ||
+    normalized.match(/^\s*(\d{1,2})(?::(\d{2}))?\s*$/); // bare number fallback
 
   if (!match) return null;
 
@@ -81,15 +80,15 @@ function extractTimeFromText(text) {
 
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
   if (minute < 0 || minute > 59) return null;
+  if (hour < 1 || hour > 23) return null;
 
   if (meridiem) {
     if (hour < 1 || hour > 12) return null;
     if (meridiem === "pm" && hour < 12) hour += 12;
     if (meridiem === "am" && hour === 12) hour = 0;
   } else {
-    // No AM/PM stated — assume PM for restaurant hours (1–11 → 13–23)
+    // No AM/PM — assume PM for restaurant hours (1–11 → 13–23)
     if (hour >= 1 && hour <= 11) hour += 12;
-    if (hour === 0) return null;
   }
 
   const date = new Date();
@@ -103,15 +102,21 @@ function extractNameFromText(text) {
 
   const normalized = text.trim();
 
+  // Reject pure numbers or very short strings that are clearly not names
+  if (/^\d+$/.test(normalized.trim())) return null;
+  if (normalized.trim().length < 2) return null;
+
   const patterns = [
-    /\bmy name is\s+([a-z][a-z\s'-]{1,40})/i,
-    /\bi am\s+([a-z][a-z\s'-]{1,40})/i,
-    /\bi'm\s+([a-z][a-z\s'-]{1,40})/i,
-    /\bthis is\s+([a-z][a-z\s'-]{1,40})/i,
-    /\bname[''s]*\s+(?:is\s+)?([a-z][a-z\s'-]{1,40})/i,
-    /\bput it under\s+([a-z][a-z\s'-]{1,40})/i,
-    /\bunder\s+([a-z][a-z\s'-]{1,40})/i,
-    /\bbook.*under\s+([a-z][a-z\s'-]{1,40})/i,
+    /\bmy name is\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
+    /\bi am\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
+    /\bi'm\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
+    /\bthis is\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
+    /\bname[''s]*\s+(?:is\s+)?([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
+    /\bput it under\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
+    /\bunder\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
+    /\bbook.*under\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
+    /\bit[''s]*s\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,   // "it's Mahmoud"
+    /\bcall it\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,      // "call it Mahmoud"
   ];
 
   for (const pattern of patterns) {
@@ -119,16 +124,17 @@ function extractNameFromText(text) {
     if (match?.[1]) {
       return match[1]
         .trim()
-        .replace(/[^a-z\s'-]/gi, "")
+        .replace(/[^a-zA-Z\s'-]/g, "")
         .replace(/\b\w/g, (c) => c.toUpperCase());
     }
   }
 
-  // ✅ Already correct: bare single name like "Mahmoud" is accepted
+  // Bare name fallback — "Mahmoud", "Ali Hassan", etc.
+  // Must be letters only (no digits), 2–40 chars, max 3 words
   if (
-    /^[a-zA-Z][a-zA-Z\s'-]{0,40}$/.test(normalized) &&
-    normalized.split(" ").length <= 3 &&
-    normalized.length >= 2
+    /^[a-zA-Z][a-zA-Z\s'-]{1,40}$/.test(normalized) &&
+    normalized.split(/\s+/).length <= 3 &&
+    normalized.trim().length >= 2
   ) {
     return normalized
       .trim()
@@ -145,7 +151,7 @@ function looksLikeBookingIntent(text) {
 
 /**
  * ================================
- * IN-MEMORY LOCK (Fix 3 — prevent duplicate concurrent bookings)
+ * IN-MEMORY LOCK — prevent duplicate concurrent bookings
  * ================================
  */
 const processingCalls = new Set();
@@ -211,13 +217,6 @@ async function processLLMMessage(body, req) {
     body?.call?.caller_id ||
     null;
 
-  console.log("📞 Phone fields from body:", {
-    call_from_number: body?.call?.from_number,
-    body_from_number: body?.from_number,
-    body_caller_id: body?.caller_id,
-    call_caller_id: body?.call?.caller_id,
-  });
-
   if (!call.callerNumber && phoneFromBody) {
     await Call.updateOne(
       { _id: call._id },
@@ -243,10 +242,10 @@ async function processLLMMessage(body, req) {
    */
   const freshCall = await Call.findOne({ _id: call._id }).lean();
   let draft = {
-    partySize: freshCall.bookingDraft?.partySize ?? null,
+    partySize:      freshCall.bookingDraft?.partySize      ?? null,
     requestedStart: freshCall.bookingDraft?.requestedStart ?? null,
-    customerName: freshCall.bookingDraft?.customerName ?? null,
-    customerPhone: freshCall.bookingDraft?.customerPhone ?? freshCall.callerNumber ?? null,
+    customerName:   freshCall.bookingDraft?.customerName   ?? null,
+    customerPhone:  freshCall.bookingDraft?.customerPhone  ?? freshCall.callerNumber ?? null,
   };
 
   const bookingFlowActive =
@@ -261,22 +260,29 @@ async function processLLMMessage(body, req) {
    * ================================
    */
   if (bookingFlowActive) {
-    const size = extractPartySizeFromText(latestUserText);
-    const time = extractTimeFromText(latestUserText);
-    const name = extractNameFromText(latestUserText);
 
-    if (size && !draft.partySize) draft.partySize = size;
-    if (time && !draft.requestedStart) draft.requestedStart = time;
-    if (name && !draft.customerName) draft.customerName = name;
+    // Only extract the field we are currently waiting for.
+    // This prevents "7" from being grabbed as a name,
+    // and "Mahmoud" from being misread as a party size.
+    if (!draft.partySize) {
+      const size = extractPartySizeFromText(latestUserText);
+      if (size) draft.partySize = size;
+    } else if (!draft.requestedStart) {
+      const time = extractTimeFromText(latestUserText);
+      if (time) draft.requestedStart = time;
+    } else if (!draft.customerName) {
+      const name = extractNameFromText(latestUserText);
+      if (name) draft.customerName = name;
+    }
 
     await Call.updateOne(
       { _id: call._id },
       {
         $set: {
-          "bookingDraft.partySize": draft.partySize,
+          "bookingDraft.partySize":      draft.partySize,
           "bookingDraft.requestedStart": draft.requestedStart,
-          "bookingDraft.customerName": draft.customerName,
-          "bookingDraft.customerPhone": draft.customerPhone,
+          "bookingDraft.customerName":   draft.customerName,
+          "bookingDraft.customerPhone":  draft.customerPhone,
         },
       }
     );
@@ -285,7 +291,7 @@ async function processLLMMessage(body, req) {
 
     /**
      * ================================
-     * STRICT STEP-BY-STEP QUESTIONS
+     * STEP-BY-STEP QUESTIONS
      * ================================
      */
     if (!draft.partySize) {
@@ -317,7 +323,6 @@ async function processLLMMessage(body, req) {
       };
     }
 
-    // ✅ FIX 3: In-memory lock to prevent duplicate concurrent booking attempts
     if (processingCalls.has(callId)) {
       console.log("⏭ Already processing booking for:", callId);
       return { response: "One moment please..." };
@@ -338,15 +343,15 @@ async function processLLMMessage(body, req) {
      */
     try {
       const result = await findNearestAvailableSlot({
-        businessId: agent.businessId,
-        requestedStart: draft.requestedStart,
+        businessId:      agent.businessId,
+        requestedStart:  draft.requestedStart,
         durationMinutes: 90,
-        partySize: draft.partySize,
-        source: "ai",
-        agentId: agent._id,
+        partySize:       draft.partySize,
+        source:          "ai",
+        agentId:         agent._id,
         callId,
-        customerName: draft.customerName,
-        customerPhone: draft.customerPhone,
+        customerName:    draft.customerName,
+        customerPhone:   draft.customerPhone,
       });
 
       if (result?.success && result.booking) {
@@ -356,9 +361,9 @@ async function processLLMMessage(body, req) {
           { _id: call._id },
           {
             $set: {
-              "bookingDraft.partySize": null,
+              "bookingDraft.partySize":      null,
               "bookingDraft.requestedStart": null,
-              "bookingDraft.customerName": null,
+              "bookingDraft.customerName":   null,
             },
           }
         );
@@ -389,17 +394,15 @@ async function processLLMMessage(body, req) {
       }
 
       return {
-        response:
-          "I'm sorry, we don't have availability for that time. Would you like to try a different time?",
+        response: "I'm sorry, we don't have availability for that time. Would you like to try a different time?",
       };
+
     } catch (err) {
       console.error("❌ Booking error:", err);
       return {
-        response:
-          "I'm sorry, something went wrong while making the reservation. Please try again.",
+        response: "I'm sorry, something went wrong while making the reservation. Please try again.",
       };
     } finally {
-      // ✅ Always release the lock
       processingCalls.delete(callId);
     }
   }
