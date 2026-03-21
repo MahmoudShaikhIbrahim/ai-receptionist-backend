@@ -34,7 +34,6 @@ function extractPartySizeFromText(text) {
 
   const normalized = normalizeText(text);
 
-  // ✅ Removed greedy \b(\d+)\b fallback — was matching "a" → 1
   const patterns = [
     /table for (\d+)/i,
     /party of (\d+)/i,
@@ -42,6 +41,8 @@ function extractPartySizeFromText(text) {
     /(\d+)\s*(people|persons|guests)/i,
     /\bwe are (\d+)/i,
     /\bjust (\d+)\b/i,
+    // ✅ FIX 1: Standalone number as last fallback (e.g. "Two." → "2." after wordsToNumbers)
+    /^\s*(\d+)\s*\.?\s*$/,
   ];
 
   for (const pattern of patterns) {
@@ -60,15 +61,23 @@ function extractTimeFromText(text) {
 
   const normalized = normalizeText(text);
 
-  const match = normalized.match(
-    /\b(?:at\s+|around\s+|maybe\s+|for\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
-  );
+  // ✅ FIX 2: Only match a time if it has context (at/around/etc.) OR explicit AM/PM.
+  // A bare number like "1" by itself will NOT match here — it must have a prefix word
+  // or AM/PM. Exception: we also allow bare numbers 1–11 with no AM/PM only when
+  // accompanied by a time-context word, and assume PM for restaurant hours.
+  const match =
+    // Priority 1: context word + number + optional AM/PM  (e.g. "at 1", "around 7pm")
+    normalized.match(
+      /\b(?:at|around|maybe|for)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
+    ) ||
+    // Priority 2: number + explicit AM/PM, no context word needed  (e.g. "7pm", "1:30am")
+    normalized.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
 
   if (!match) return null;
 
   let hour = parseInt(match[1], 10);
   let minute = match[2] ? parseInt(match[2], 10) : 0;
-  const meridiem = match[3];
+  const meridiem = match[3]?.toLowerCase();
 
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
   if (minute < 0 || minute > 59) return null;
@@ -78,7 +87,7 @@ function extractTimeFromText(text) {
     if (meridiem === "pm" && hour < 12) hour += 12;
     if (meridiem === "am" && hour === 12) hour = 0;
   } else {
-    // Assume PM for restaurant hours
+    // No AM/PM stated — assume PM for restaurant hours (1–11 → 13–23)
     if (hour >= 1 && hour <= 11) hour += 12;
     if (hour === 0) return null;
   }
@@ -115,7 +124,7 @@ function extractNameFromText(text) {
     }
   }
 
-// Fallback: entire message is a name (1-3 words, letters only)
+  // ✅ Already correct: bare single name like "Mahmoud" is accepted
   if (
     /^[a-zA-Z][a-zA-Z\s'-]{0,40}$/.test(normalized) &&
     normalized.split(" ").length <= 3 &&
@@ -133,6 +142,13 @@ function looksLikeBookingIntent(text) {
   if (!text) return false;
   return /\b(book|reserve|reservation|table)\b/i.test(text);
 }
+
+/**
+ * ================================
+ * IN-MEMORY LOCK (Fix 3 — prevent duplicate concurrent bookings)
+ * ================================
+ */
+const processingCalls = new Set();
 
 /**
  * ================================
@@ -225,7 +241,7 @@ async function processLLMMessage(body, req) {
    * DRAFT STATE
    * ================================
    */
-const freshCall = await Call.findOne({ _id: call._id }).lean();
+  const freshCall = await Call.findOne({ _id: call._id }).lean();
   let draft = {
     partySize: freshCall.bookingDraft?.partySize ?? null,
     requestedStart: freshCall.bookingDraft?.requestedStart ?? null,
@@ -277,7 +293,7 @@ const freshCall = await Call.findOne({ _id: call._id }).lean();
     }
 
     if (!draft.requestedStart) {
-      return { response: "What time would you like to reserve the table?" };
+      return { response: "What time would you like the reservation? Just say the hour, like 7 or 8." };
     }
 
     if (!draft.customerName) {
@@ -301,9 +317,17 @@ const freshCall = await Call.findOne({ _id: call._id }).lean();
       };
     }
 
+    // ✅ FIX 3: In-memory lock to prevent duplicate concurrent booking attempts
+    if (processingCalls.has(callId)) {
+      console.log("⏭ Already processing booking for:", callId);
+      return { response: "One moment please..." };
+    }
+    processingCalls.add(callId);
+
     const agent = await Agent.findById(call.agentId).lean();
 
     if (!agent) {
+      processingCalls.delete(callId);
       return { response: "Sorry, something went wrong finding the restaurant." };
     }
 
@@ -374,6 +398,9 @@ const freshCall = await Call.findOne({ _id: call._id }).lean();
         response:
           "I'm sorry, something went wrong while making the reservation. Please try again.",
       };
+    } finally {
+      // ✅ Always release the lock
+      processingCalls.delete(callId);
     }
   }
 
