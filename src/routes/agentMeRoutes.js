@@ -1,31 +1,24 @@
 const express = require("express");
 const router = express.Router();
-
 const requireAuth = require("../middleware/authMiddleware");
 const agentController = require("../controllers/agentController");
 
-// ==========================
-// GET CURRENT AGENT (ALIAS)
-// GET /business/agent/me
-// ==========================
+// GET agent settings
 router.get("/me", requireAuth, agentController.getMe);
-
-// ==========================
-// GET CURRENT AGENT
-// GET /business/agent
-// ==========================
 router.get("/", requireAuth, agentController.getMe);
 
-// ==========================
-// UPDATE AGENT (CHANGE REQUEST)
-// PUT /business/agent
-// ==========================
+// UPDATE agent personality + prompt
 router.put("/", requireAuth, agentController.updateAgent);
 
-// ==========================
-// UPDATE OPENING HOURS
-// PUT /business/agent/hours
-// ==========================
+// UPDATE features
+router.put("/features", requireAuth, agentController.updateFeatures);
+
+// UPDATE opening hours
 router.put("/hours", requireAuth, agentController.updateOpeningHours);
+
+// MENU
+router.post("/menu", requireAuth, agentController.addMenuItem);
+router.put("/menu/:itemId", requireAuth, agentController.updateMenuItem);
+router.delete("/menu/:itemId", requireAuth, agentController.deleteMenuItem);
 
 module.exports = router;
