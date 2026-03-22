@@ -7,10 +7,14 @@ const requireAuth = require("../middleware/authMiddleware");
 const Business = require("../models/Business");
 const Agent = require("../models/Agent");
 const { getBusinessCalls } = require("../controllers/callController");
+const agentMeRoutes = require("./agentMeRoutes");
+
 
 /* =====================================================
    GET /business/me
 ===================================================== */
+router.use("/agent", agentMeRoutes);
+
 router.get("/me", requireAuth, async (req, res) => {
   try {
     const business = await Business.findById(req.businessId).lean();
