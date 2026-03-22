@@ -14,7 +14,6 @@ const { findNearestAvailableSlot } = require("../services/bookingService");
 async function extractBookingDetails(text, currentDraft, transcript) {
   if (!text || text.trim().length < 1) return {};
 
-  // Build last few messages for context
   const recentConvo = (transcript ?? [])
     .slice(-6)
     .map(t => `${t.role === "agent" ? "Agent" : "Customer"}: ${t.content}`)
@@ -49,27 +48,26 @@ Respond ONLY with valid JSON. Include only fields you found. Examples:
 Only the JSON. No explanation. No markdown.`;
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
+        model: "gpt-4o-mini",
         max_tokens: 100,
         messages: [{ role: "user", content: prompt }],
       }),
     });
 
-    console.log("🔑 API Key exists:", !!process.env.ANTHROPIC_API_KEY);
+    console.log("🔑 OpenAI Key exists:", !!process.env.OPENAI_API_KEY);
     console.log("📡 Extraction response status:", response.status);
 
     const data = await response.json();
     console.log("📦 Extraction raw response:", JSON.stringify(data));
 
-    const raw = data.content?.[0]?.text?.trim() ?? "{}";
+    const raw = data.choices?.[0]?.message?.content?.trim() ?? "{}";
     const clean = raw.replace(/```json|```/g, "").trim();
     console.log("✅ Extracted JSON string:", clean);
 
@@ -78,8 +76,7 @@ Only the JSON. No explanation. No markdown.`;
     return parsed;
 
   } catch (err) {
-    console.error("❌ AI extraction error:", err.message);
-    console.error("❌ AI extraction stack:", err.stack);
+    console.error("❌ OpenAI extraction error:", err.message);
     return {};
   }
 }
