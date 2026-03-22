@@ -3,159 +3,126 @@
 const Agent = require("../models/Agent");
 const Call = require("../models/Call");
 const Booking = require("../models/Booking");
-const { wordsToNumbers } = require("words-to-numbers");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
 /**
  * ================================
- * NORMALIZATION
+ * AI EXTRACTION
  * ================================
  */
-function normalizeText(value) {
-  if (typeof value !== "string") return "";
+async function extractBookingDetails(text, currentDraft, transcript) {
+  if (!text || text.trim().length < 1) return {};
 
-  // Strip trailing punctuation BEFORE any conversion
-  const cleaned = value.replace(/[.,!?;:]+$/, "").trim();
+  // Build last few messages for context
+  const recentConvo = (transcript ?? [])
+    .slice(-6)
+    .map(t => `${t.role === "agent" ? "Agent" : "Customer"}: ${t.content}`)
+    .join("\n");
 
-  const protectedText = cleaned.replace(/\bI\b/g, "__PRONOUN_I__");
-  const converted = wordsToNumbers(protectedText.toLowerCase());
+  const prompt = `You are helping extract booking information from a phone call at a restaurant.
 
-  return String(converted)
-    .replace(/__pronoun_i__/g, "i")
-    .replace(/\s+/g, " ")
-    .trim();
+Recent conversation:
+${recentConvo}
+
+Current booking draft:
+- Party size: ${currentDraft.partySize ?? "not collected yet"}
+- Time: ${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "not collected yet"}
+- Name: ${currentDraft.customerName ?? "not collected yet"}
+
+The customer just said: "${text}"
+
+Extract ONLY what the customer just provided. Be smart and natural about it:
+- "four", "4", "just me and my wife" = partySize 2, "family of 5" = partySize 5
+- "seven", "7pm", "around eight", "half past six", "19:00", "at 7" = time (assume PM for restaurant hours if no AM/PM)
+- "Mahmoud", "it's Sarah", "John", "my name is Ali", "call it Hassan", any single name = name
+- If they said "yes" to a question the agent asked, figure out what they confirmed from context
+
+Respond ONLY with valid JSON. Include only fields you found. Examples:
+{"partySize": 4}
+{"time": "19:00"}
+{"name": "Mahmoud"}
+{"partySize": 2, "name": "Sarah"}
+{"time": "20:30"}
+{}
+
+Only the JSON. No explanation. No markdown.`;
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 100,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    const data = await response.json();
+    const raw = data.content?.[0]?.text?.trim() ?? "{}";
+    const clean = raw.replace(/```json|```/g, "").trim();
+    return JSON.parse(clean);
+  } catch (err) {
+    console.error("❌ AI extraction error:", err);
+    return {};
+  }
 }
 
-function extractPartySizeFromText(text) {
-  if (!text) return null;
+/**
+ * ================================
+ * AI NATURAL RESPONSE
+ * ================================
+ */
+async function generateNaturalResponse(draft, transcript) {
+  const missingFields = [];
+  if (!draft.partySize) missingFields.push("party size (how many people)");
+  if (!draft.requestedStart) missingFields.push("reservation time");
+  if (!draft.customerName) missingFields.push("name for the reservation");
 
-  // Manual word-to-number map — no library needed
-  const wordMap = {
-    one: 1, two: 2, three: 3, four: 4, five: 5,
-    six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-    eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
-    sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
-  };
+  const conversationHistory = (transcript ?? []).map(t => ({
+    role: t.role === "agent" ? "assistant" : "user",
+    content: t.content,
+  }));
 
-  // Normalize: lowercase, strip punctuation
-  const raw = text.toLowerCase().replace(/[.,!?;:]+/g, "").trim();
+  const systemPrompt = `You are a friendly and professional restaurant receptionist handling a phone reservation.
 
-  // Replace word numbers with digits
-  let normalized = raw;
-  for (const [word, num] of Object.entries(wordMap)) {
-    normalized = normalized.replace(new RegExp(`\\b${word}\\b`, "g"), String(num));
+Current booking status:
+- Party size: ${draft.partySize ?? "not collected"}
+- Time: ${draft.requestedStart ? new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "not collected"}
+- Name: ${draft.customerName ?? "not collected"}
+
+You still need to collect: ${missingFields.join(", ")}
+
+Rules:
+- Ask for ONE missing field at a time naturally
+- Never repeat a question if the customer already answered it
+- Never ask for a phone number
+- Keep responses short, warm and conversational like a real human receptionist
+- If the customer gave you something, acknowledge it briefly then ask for the next thing
+- Do not use robotic phrases like "Could you please provide me with"
+- Talk like a normal friendly person
+- Never mention dates, only ask for time`;
+
+  try {
+    const response = await getAIResponse([
+      { role: "system", content: systemPrompt },
+      ...conversationHistory,
+    ]);
+    return response;
+  } catch (err) {
+    console.error("❌ AI response error:", err);
+    if (!draft.partySize) return "How many people will be joining you?";
+    if (!draft.requestedStart) return "What time works for you?";
+    if (!draft.customerName) return "And what name should I put the reservation under?";
   }
-
-  const patterns = [
-    /table for (\d+)/i,
-    /party of (\d+)/i,
-    /\bfor (\d+)/i,
-    /(\d+)\s*(people|persons|guests|pax)/i,
-    /\bwe are (\d+)/i,
-    /\bjust (\d+)\b/i,
-    /\b(\d+)\s+of us\b/i,
-    /^\s*(\d+)\s*$/,          // bare number like "4" or "four" (after word replacement)
-  ];
-
-  for (const pattern of patterns) {
-    const match = normalized.match(pattern);
-    if (match) {
-      const value = parseInt(match[1], 10);
-      if (value >= 1 && value <= 50) return value;
-    }
-  }
-
-  return null;
 }
 
-function extractTimeFromText(text) {
-  if (!text) return null;
-
-  const normalized = normalizeText(text);
-
-  // Priority 1: context word + number + optional AM/PM  (e.g. "at 7", "around 8pm")
-  // Priority 2: number + explicit AM/PM  (e.g. "7pm", "1:30am")
-  // Priority 3: bare number 1–12 alone is accepted and assumed PM (e.g. caller says just "7")
-  const match =
-    normalized.match(
-      /\b(?:at|around|maybe|for)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
-    ) ||
-    normalized.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i) ||
-    normalized.match(/^\s*(\d{1,2})(?::(\d{2}))?\s*$/); // bare number fallback
-
-  if (!match) return null;
-
-  let hour = parseInt(match[1], 10);
-  let minute = match[2] ? parseInt(match[2], 10) : 0;
-  const meridiem = match[3]?.toLowerCase();
-
-  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
-  if (minute < 0 || minute > 59) return null;
-  if (hour < 1 || hour > 23) return null;
-
-  if (meridiem) {
-    if (hour < 1 || hour > 12) return null;
-    if (meridiem === "pm" && hour < 12) hour += 12;
-    if (meridiem === "am" && hour === 12) hour = 0;
-  } else {
-    // No AM/PM — assume PM for restaurant hours (1–11 → 13–23)
-    if (hour >= 1 && hour <= 11) hour += 12;
-  }
-
-  const date = new Date();
-  date.setHours(hour, minute, 0, 0);
-
-  return date;
-}
-
-function extractNameFromText(text) {
-  if (!text) return null;
-
-  const normalized = text.trim();
-
-  // Reject pure numbers or very short strings that are clearly not names
-  if (/^\d+$/.test(normalized.trim())) return null;
-  if (normalized.trim().length < 2) return null;
-
-  const patterns = [
-    /\bmy name is\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
-    /\bi am\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
-    /\bi'm\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
-    /\bthis is\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
-    /\bname[''s]*\s+(?:is\s+)?([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
-    /\bput it under\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
-    /\bunder\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
-    /\bbook.*under\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,
-    /\bit[''s]*s\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,   // "it's Mahmoud"
-    /\bcall it\s+([a-zA-Z][a-zA-Z\s'-]{1,40})/i,      // "call it Mahmoud"
-  ];
-
-  for (const pattern of patterns) {
-    const match = normalized.match(pattern);
-    if (match?.[1]) {
-      return match[1]
-        .trim()
-        .replace(/[^a-zA-Z\s'-]/g, "")
-        .replace(/\b\w/g, (c) => c.toUpperCase());
-    }
-  }
-
-  // Bare name fallback — "Mahmoud", "Ali Hassan", etc.
-  // Must be letters only (no digits), 2–40 chars, max 3 words
-  if (
-    /^[a-zA-Z][a-zA-Z\s'-]{1,40}$/.test(normalized) &&
-    normalized.split(/\s+/).length <= 3 &&
-    normalized.trim().length >= 2
-  ) {
-    return normalized
-      .trim()
-      .replace(/\b\w/g, (c) => c.toUpperCase());
-  }
-
-  return null;
-}
-
+/**
+ * ================================
+ * BOOKING INTENT DETECTION
+ * ================================
+ */
 function looksLikeBookingIntent(text) {
   if (!text) return false;
   return /\b(book|reserve|reservation|table)\b/i.test(text);
@@ -163,7 +130,7 @@ function looksLikeBookingIntent(text) {
 
 /**
  * ================================
- * IN-MEMORY LOCK — prevent duplicate concurrent bookings
+ * IN-MEMORY LOCK
  * ================================
  */
 const processingCalls = new Set();
@@ -247,6 +214,8 @@ async function processLLMMessage(body, req) {
       ? body.latest_user_text.trim()
       : "";
 
+  const transcript = body.transcript ?? [];
+
   /**
    * ================================
    * DRAFT STATE
@@ -260,11 +229,22 @@ async function processLLMMessage(body, req) {
     customerPhone:  freshCall.bookingDraft?.customerPhone  ?? freshCall.callerNumber ?? null,
   };
 
+  /**
+   * ================================
+   * BOOKING FLOW DETECTION
+   * ================================
+   */
+  const recentTranscriptText = transcript
+    .slice(-4)
+    .map(t => t.content)
+    .join(" ");
+
   const bookingFlowActive =
     !!draft.partySize ||
     !!draft.requestedStart ||
     !!draft.customerName ||
-    looksLikeBookingIntent(latestUserText);
+    looksLikeBookingIntent(latestUserText) ||
+    looksLikeBookingIntent(recentTranscriptText);
 
   /**
    * ================================
@@ -273,18 +253,28 @@ async function processLLMMessage(body, req) {
    */
   if (bookingFlowActive) {
 
-    // Only extract the field we are currently waiting for.
-    // This prevents "7" from being grabbed as a name,
-    // and "Mahmoud" from being misread as a party size.
-    if (!draft.partySize) {
-      const size = extractPartySizeFromText(latestUserText);
-      if (size) draft.partySize = size;
-    } else if (!draft.requestedStart) {
-      const time = extractTimeFromText(latestUserText);
-      if (time) draft.requestedStart = time;
-    } else if (!draft.customerName) {
-      const name = extractNameFromText(latestUserText);
-      if (name) draft.customerName = name;
+    // Use AI to extract details naturally
+    const extracted = await extractBookingDetails(latestUserText, draft, transcript);
+
+    console.log("🧠 AI extracted:", extracted);
+
+    if (extracted.partySize && !draft.partySize) {
+      draft.partySize = extracted.partySize;
+    }
+
+    if (extracted.time && !draft.requestedStart) {
+      try {
+        const [h, m] = extracted.time.split(":").map(Number);
+        const d = new Date();
+        d.setHours(h, m || 0, 0, 0);
+        draft.requestedStart = d;
+      } catch (e) {
+        console.error("❌ Time parsing error:", e);
+      }
+    }
+
+    if (extracted.name && !draft.customerName) {
+      draft.customerName = extracted.name;
     }
 
     await Call.updateOne(
@@ -303,19 +293,12 @@ async function processLLMMessage(body, req) {
 
     /**
      * ================================
-     * STEP-BY-STEP QUESTIONS
+     * STILL MISSING FIELDS — ASK NATURALLY
      * ================================
      */
-    if (!draft.partySize) {
-      return { response: "How many people will be dining?" };
-    }
-
-    if (!draft.requestedStart) {
-      return { response: "What time would you like the reservation? Just say the hour, like 7 or 8." };
-    }
-
-    if (!draft.customerName) {
-      return { response: "What name should I put the reservation under?" };
+    if (!draft.partySize || !draft.requestedStart || !draft.customerName) {
+      const naturalResponse = await generateNaturalResponse(draft, transcript);
+      return { response: naturalResponse };
     }
 
     /**
