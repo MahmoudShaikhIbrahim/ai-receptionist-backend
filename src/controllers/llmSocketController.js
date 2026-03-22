@@ -8,44 +8,50 @@ const { findNearestAvailableSlot } = require("../services/bookingService");
 
 /**
  * ================================
- * AI EXTRACTION
+ * COMBINED AI EXTRACTION + RESPONSE
  * ================================
  */
-async function extractBookingDetails(text, currentDraft, transcript) {
-  if (!text || text.trim().length < 1) return {};
+async function extractAndRespond(text, currentDraft, transcript) {
+  if (!text || text.trim().length < 1) return { extracted: {}, response: null };
 
   const recentConvo = (transcript ?? [])
     .slice(-6)
     .map(t => `${t.role === "agent" ? "Agent" : "Customer"}: ${t.content}`)
     .join("\n");
 
-  const prompt = `You are helping extract booking information from a phone call at a restaurant.
+  const prompt = `You are a friendly restaurant receptionist handling a phone reservation.
+
+Current booking status:
+- Party size: ${currentDraft.partySize ?? "not collected"}
+- Time: ${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "not collected"}
+- Name: ${currentDraft.customerName ?? "not collected"}
 
 Recent conversation:
 ${recentConvo}
 
-Current booking draft:
-- Party size: ${currentDraft.partySize ?? "not collected yet"}
-- Time: ${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "not collected yet"}
-- Name: ${currentDraft.customerName ?? "not collected yet"}
+Customer just said: "${text}"
 
-The customer just said: "${text}"
+Your job:
+1. Extract any booking info the customer just provided
+2. Respond naturally as a receptionist to move the booking forward
 
-Extract ONLY what the customer just provided. Be smart and natural about it:
-- "four", "4", "just me and my wife" = partySize 2, "family of 5" = partySize 5
-- "seven", "7pm", "around eight", "half past six", "19:00", "at 7" = time (assume PM for restaurant hours if no AM/PM)
-- "Mahmoud", "it's Sarah", "John", "my name is Ali", "call it Hassan", any single name = name
-- If they said "yes" to a question the agent asked, figure out what they confirmed from context
+Rules:
+- Ask for ONE missing field at a time
+- Never ask for phone number or date
+- Keep response short and warm, like a real person on the phone
+- If all 3 fields are collected, return null for response
 
-Respond ONLY with valid JSON. Include only fields you found. Examples:
-{"partySize": 4}
-{"time": "19:00"}
-{"name": "Mahmoud"}
-{"partySize": 2, "name": "Sarah"}
-{"time": "20:30"}
-{}
+Respond ONLY with this JSON:
+{
+  "extracted": {
+    "partySize": <number or null>,
+    "time": "<HH:MM or null>",
+    "name": "<string or null>"
+  },
+  "response": "<your natural reply or null if all fields collected>"
+}
 
-Only the JSON. No explanation. No markdown.`;
+Only JSON. No markdown. No explanation.`;
 
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -56,77 +62,25 @@ Only the JSON. No explanation. No markdown.`;
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        max_tokens: 100,
+        max_tokens: 150,
         messages: [{ role: "user", content: prompt }],
       }),
     });
 
-    console.log("🔑 OpenAI Key exists:", !!process.env.OPENAI_API_KEY);
-    console.log("📡 Extraction response status:", response.status);
-
     const data = await response.json();
-    console.log("📦 Extraction raw response:", JSON.stringify(data));
-
     const raw = data.choices?.[0]?.message?.content?.trim() ?? "{}";
     const clean = raw.replace(/```json|```/g, "").trim();
-    console.log("✅ Extracted JSON string:", clean);
-
     const parsed = JSON.parse(clean);
-    console.log("🎯 Parsed extraction:", parsed);
-    return parsed;
+
+    console.log("🎯 Combined extraction + response:", parsed);
+    return {
+      extracted: parsed.extracted ?? {},
+      response: parsed.response ?? null,
+    };
 
   } catch (err) {
-    console.error("❌ OpenAI extraction error:", err.message);
-    return {};
-  }
-}
-
-/**
- * ================================
- * AI NATURAL RESPONSE
- * ================================
- */
-async function generateNaturalResponse(draft, transcript) {
-  const missingFields = [];
-  if (!draft.partySize) missingFields.push("party size (how many people)");
-  if (!draft.requestedStart) missingFields.push("reservation time");
-  if (!draft.customerName) missingFields.push("name for the reservation");
-
-  const conversationHistory = (transcript ?? []).map(t => ({
-    role: t.role === "agent" ? "assistant" : "user",
-    content: t.content,
-  }));
-
-  const systemPrompt = `You are a friendly and professional restaurant receptionist handling a phone reservation.
-
-Current booking status:
-- Party size: ${draft.partySize ?? "not collected"}
-- Time: ${draft.requestedStart ? new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "not collected"}
-- Name: ${draft.customerName ?? "not collected"}
-
-You still need to collect: ${missingFields.join(", ")}
-
-Rules:
-- Ask for ONE missing field at a time naturally
-- Never repeat a question if the customer already answered it
-- Never ask for a phone number
-- Keep responses short, warm and conversational like a real human receptionist
-- If the customer gave you something, acknowledge it briefly then ask for the next thing
-- Do not use robotic phrases like "Could you please provide me with"
-- Talk like a normal friendly person
-- Never mention dates, only ask for time`;
-
-  try {
-    const response = await getAIResponse([
-      { role: "system", content: systemPrompt },
-      ...conversationHistory,
-    ]);
-    return response;
-  } catch (err) {
-    console.error("❌ AI response error:", err);
-    if (!draft.partySize) return "How many people will be joining you?";
-    if (!draft.requestedStart) return "What time works for you?";
-    if (!draft.customerName) return "And what name should I put the reservation under?";
+    console.error("❌ OpenAI combined error:", err.message);
+    return { extracted: {}, response: null };
   }
 }
 
@@ -198,14 +152,24 @@ async function processLLMMessage(body, req) {
 
   /**
    * ================================
-   * RECOVER PHONE FROM RETELL BODY
+   * PHONE NUMBER — LOG ALL CANDIDATES
    * ================================
    */
+  console.log("📞 Full body.call object:", JSON.stringify(body.call ?? {}));
+  console.log("📞 Phone candidates:", {
+    from_number: body?.call?.from_number,
+    caller_id: body?.call?.caller_id,
+    from: body?.call?.from,
+    customer_number: body?.call?.customer_number,
+    from_number_body: body?.from_number,
+  });
+
   const phoneFromBody =
     body?.call?.from_number ||
-    body?.from_number ||
-    body?.caller_id ||
     body?.call?.caller_id ||
+    body?.call?.from ||
+    body?.call?.customer_number ||
+    body?.from_number ||
     null;
 
   if (!call.callerNumber && phoneFromBody) {
@@ -238,7 +202,7 @@ async function processLLMMessage(body, req) {
     partySize:      freshCall.bookingDraft?.partySize      ?? null,
     requestedStart: freshCall.bookingDraft?.requestedStart ?? null,
     customerName:   freshCall.bookingDraft?.customerName   ?? null,
-    customerPhone:  freshCall.bookingDraft?.customerPhone  ?? freshCall.callerNumber ?? null,
+    customerPhone:  freshCall.bookingDraft?.customerPhone  ?? freshCall.callerNumber ?? phoneFromBody ?? null,
   };
 
   /**
@@ -265,10 +229,9 @@ async function processLLMMessage(body, req) {
    */
   if (bookingFlowActive) {
 
-    // Use AI to extract details naturally
-    const extracted = await extractBookingDetails(latestUserText, draft, transcript);
+    const { extracted, response: aiResponse } = await extractAndRespond(latestUserText, draft, transcript);
 
-    console.log("🧠 AI extracted:", extracted);
+    console.log("🧠 Extracted:", extracted);
 
     if (extracted.partySize && !draft.partySize) {
       draft.partySize = extracted.partySize;
@@ -305,12 +268,16 @@ async function processLLMMessage(body, req) {
 
     /**
      * ================================
-     * STILL MISSING FIELDS — ASK NATURALLY
+     * STILL MISSING FIELDS
      * ================================
      */
     if (!draft.partySize || !draft.requestedStart || !draft.customerName) {
-      const naturalResponse = await generateNaturalResponse(draft, transcript);
-      return { response: naturalResponse };
+      const fallback =
+        !draft.partySize ? "How many people will be joining you?" :
+        !draft.requestedStart ? "What time works for you?" :
+        "And the name for the reservation?";
+
+      return { response: aiResponse || fallback };
     }
 
     /**
@@ -405,7 +372,9 @@ async function processLLMMessage(body, req) {
       };
 
     } catch (err) {
-      console.error("❌ Booking error:", err);
+      console.error("❌ Booking error FULL:", JSON.stringify(err, null, 2));
+      console.error("❌ Booking error message:", err.message);
+      console.error("❌ Booking error stack:", err.stack);
       return {
         response: "I'm sorry, something went wrong while making the reservation. Please try again.",
       };
