@@ -52,10 +52,10 @@ Only the JSON. No explanation. No markdown.`;
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
-  "Content-Type": "application/json",
-  "x-api-key": process.env.ANTHROPIC_API_KEY,
-  "anthropic-version": "2023-06-01",
-},
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 100,
@@ -63,12 +63,23 @@ Only the JSON. No explanation. No markdown.`;
       }),
     });
 
+    console.log("🔑 API Key exists:", !!process.env.ANTHROPIC_API_KEY);
+    console.log("📡 Extraction response status:", response.status);
+
     const data = await response.json();
+    console.log("📦 Extraction raw response:", JSON.stringify(data));
+
     const raw = data.content?.[0]?.text?.trim() ?? "{}";
     const clean = raw.replace(/```json|```/g, "").trim();
-    return JSON.parse(clean);
+    console.log("✅ Extracted JSON string:", clean);
+
+    const parsed = JSON.parse(clean);
+    console.log("🎯 Parsed extraction:", parsed);
+    return parsed;
+
   } catch (err) {
-    console.error("❌ AI extraction error:", err);
+    console.error("❌ AI extraction error:", err.message);
+    console.error("❌ AI extraction stack:", err.stack);
     return {};
   }
 }
