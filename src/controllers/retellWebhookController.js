@@ -96,7 +96,7 @@ exports.handleRetellWebhook = async (req, res) => {
         // ✅ UPDATABLE FIELDS
         $set: {
           callerNumber:
-            pick(call, ["from", "caller_number", "callerNumber"]) || null,
+           pick(call, ["from_number", "from", "caller_number", "callerNumber", "customer_number"]) || null,
 
           calleeNumber:
             pick(call, ["to", "callee_number", "calleeNumber"]) || null,
