@@ -65,12 +65,12 @@ const CallSchema = new mongoose.Schema(
       customerPhone: { type: String, default: null },
     },
 
-    // 🛒 Order draft (built during call)
     orderDraft: {
-      items: { type: Array, default: [] },
-      orderType: { type: String, default: null },
-      status: { type: String, default: null },
-    },
+  items: { type: Array, default: [] },
+  orderType: { type: String, default: null },
+  status: { type: String, default: null },
+  deliveryAddress: { type: String, default: null },
+},
 
     // 📝 AI outputs
     summary: {

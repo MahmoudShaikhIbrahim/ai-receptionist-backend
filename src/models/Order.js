@@ -19,6 +19,7 @@ const OrderSchema = new mongoose.Schema(
     agentId: { type: mongoose.Schema.Types.ObjectId, ref: "Agent" },
     customerName: String,
     customerPhone: String,
+    deliveryAddress: { type: String, default: null },
     items: [OrderItemSchema],
     orderType: {
       type: String,

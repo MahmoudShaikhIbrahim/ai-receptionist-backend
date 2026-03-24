@@ -3,6 +3,7 @@
 const Agent = require("../models/Agent");
 const Call = require("../models/Call");
 const Booking = require("../models/Booking");
+const Order = require("../models/Order");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
@@ -102,6 +103,7 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
 
   const hasOrders = agent.features?.orders === true;
   const hasBookings = agent.features?.bookings !== false;
+  const isDineIn = orderDraft.orderType === "dineIn";
 
   const recentConvo = (transcript ?? [])
     .slice(-6)
@@ -122,6 +124,7 @@ Current booking status:
 Current order status:
 - Items ordered: ${orderDraft.items?.length > 0 ? orderDraft.items.map(i => `${i.name} x${i.quantity}`).join(", ") : "none"}
 - Order type: ${orderDraft.orderType ?? "not set"}
+- Delivery address: ${orderDraft.deliveryAddress ?? "not collected"}
 
 ${menuText}
 
@@ -131,8 +134,8 @@ ${recentConvo}
 Customer just said: "${text}"
 
 Your job:
-1. Extract any booking info the customer just provided (party size, time, name)
-2. Extract any order info the customer just provided (menu items, quantities, order type)
+1. Extract any booking info (party size, time, name)
+2. Extract any order info (menu items, quantities, order type, delivery address)
 3. Respond naturally to move the conversation forward
 
 Features enabled:
@@ -145,7 +148,10 @@ Rules:
 - Keep response short and warm like a real person on the phone
 - For orders, only accept items that exist on the menu
 - Order type can be: dineIn, pickup, or delivery
-- If all booking fields are collected and no pending order questions, return null for response
+- For dineIn orders, also collect party size, time, and name (same as a booking)
+- For delivery orders, collect delivery address and name
+- For pickup orders, collect name only
+- If all required info is collected, return null for response
 
 Respond ONLY with this JSON:
 {
@@ -156,9 +162,10 @@ Respond ONLY with this JSON:
   },
   "orderExtracted": {
     "items": [{ "name": "<item name>", "quantity": <number>, "extras": ["<extra name>"] }],
-    "orderType": "<dineIn|pickup|delivery|null>"
+    "orderType": "<dineIn|pickup|delivery|null>",
+    "deliveryAddress": "<address or null>"
   },
-  "response": "<your natural reply or null if everything is collected>"
+  "response": "<your natural reply or null if everything collected>"
 }
 
 Only JSON. No markdown. No explanation.`;
@@ -230,9 +237,7 @@ async function processLLMMessage(body, req) {
   if (interactionType !== "response_required") return null;
 
   /**
-   * ================================
    * CALL ID
-   * ================================
    */
   let callId =
     body.call_id ||
@@ -252,9 +257,7 @@ async function processLLMMessage(body, req) {
   }
 
   /**
-   * ================================
    * LOAD CALL
-   * ================================
    */
   const call = await Call.findOne({
     $or: [{ callId }, { call_id: callId }],
@@ -266,9 +269,7 @@ async function processLLMMessage(body, req) {
   }
 
   /**
-   * ================================
-   * LOAD AGENT (with prompt, menu, features)
-   * ================================
+   * LOAD AGENT
    */
   const agent = await Agent.findById(call.agentId).lean();
   if (!agent) {
@@ -277,9 +278,7 @@ async function processLLMMessage(body, req) {
   }
 
   /**
-   * ================================
    * PHONE NUMBER
-   * ================================
    */
   const phoneFromBody =
     body?.call?.from_number ||
@@ -298,9 +297,7 @@ async function processLLMMessage(body, req) {
   }
 
   /**
-   * ================================
    * USER TEXT
-   * ================================
    */
   const latestUserText =
     typeof body.latest_user_text === "string"
@@ -310,9 +307,7 @@ async function processLLMMessage(body, req) {
   const transcript = body.transcript ?? [];
 
   /**
-   * ================================
    * DRAFT STATE
-   * ================================
    */
   const freshCall = await Call.findOne({ _id: call._id }).lean();
 
@@ -324,15 +319,14 @@ async function processLLMMessage(body, req) {
   };
 
   let orderDraft = {
-    items:     freshCall.orderDraft?.items     ?? [],
-    orderType: freshCall.orderDraft?.orderType ?? null,
-    status:    freshCall.orderDraft?.status    ?? null,
+    items:           freshCall.orderDraft?.items           ?? [],
+    orderType:       freshCall.orderDraft?.orderType       ?? null,
+    status:          freshCall.orderDraft?.status          ?? null,
+    deliveryAddress: freshCall.orderDraft?.deliveryAddress ?? null,
   };
 
   /**
-   * ================================
    * INTENT DETECTION
-   * ================================
    */
   const recentTranscriptText = transcript
     .slice(-4)
@@ -349,14 +343,13 @@ async function processLLMMessage(body, req) {
   const orderFlowActive =
     agent.features?.orders === true && (
       !!orderDraft.items?.length ||
+      !!orderDraft.orderType ||
       looksLikeOrderIntent(latestUserText) ||
       looksLikeOrderIntent(recentTranscriptText)
     );
 
   /**
-   * ================================
-   * ACTIVE FLOW — BOOKING OR ORDER
-   * ================================
+   * ACTIVE FLOW
    */
   if (bookingFlowActive || orderFlowActive) {
 
@@ -384,21 +377,28 @@ async function processLLMMessage(body, req) {
       draft.customerName = extracted.name;
     }
 
-    // Update order draft
+    // Update order draft — deduplicated
     if (orderExtracted.items?.length > 0) {
-      // Validate items against menu
       const validItems = orderExtracted.items.filter(item =>
         agent.menu?.some(m => m.name.toLowerCase() === item.name.toLowerCase() && m.available)
       );
-      if (validItems.length > 0) {
-        orderDraft.items = [...(orderDraft.items || []), ...validItems];
+      for (const newItem of validItems) {
+        const exists = orderDraft.items.some(
+          existing => existing.name.toLowerCase() === newItem.name.toLowerCase()
+        );
+        if (!exists) {
+          orderDraft.items.push(newItem);
+        }
       }
     }
     if (orderExtracted.orderType) {
       orderDraft.orderType = orderExtracted.orderType;
     }
+    if (orderExtracted.deliveryAddress && !orderDraft.deliveryAddress) {
+      orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
+    }
 
-    // Save both drafts to MongoDB
+    // Save drafts to MongoDB
     await Call.updateOne(
       { _id: call._id },
       {
@@ -410,6 +410,7 @@ async function processLLMMessage(body, req) {
           "orderDraft.items":            orderDraft.items,
           "orderDraft.orderType":        orderDraft.orderType,
           "orderDraft.status":           orderDraft.status,
+          "orderDraft.deliveryAddress":  orderDraft.deliveryAddress,
         },
       }
     );
@@ -417,18 +418,138 @@ async function processLLMMessage(body, req) {
     console.log("📋 Booking draft:", draft);
     console.log("🛒 Order draft:", orderDraft);
 
-    // If AI has a response, return it
+    // If AI still has a response, return it
     if (aiResponse) {
       return { response: aiResponse };
     }
 
     /**
      * ================================
-     * BOOKING ENGINE
+     * DINE-IN ORDER → SAVE ORDER + BOOKING
      * ================================
      */
-    if (bookingFlowActive && draft.partySize && draft.requestedStart && draft.customerName) {
+    if (
+      orderFlowActive &&
+      orderDraft.orderType === "dineIn" &&
+      orderDraft.items?.length > 0 &&
+      draft.partySize &&
+      draft.requestedStart &&
+      draft.customerName
+    ) {
+      if (processingCalls.has(callId)) {
+        return { response: "One moment please..." };
+      }
+      processingCalls.add(callId);
 
+      try {
+        // Check for existing order
+        const existingOrder = await Order.findOne({ callId });
+        if (existingOrder) {
+          return {
+            response: `Your order and table are already confirmed under ${draft.customerName}. Is there anything else I can help you with?`,
+          };
+        }
+
+        // Run booking engine
+        const result = await findNearestAvailableSlot({
+          businessId:      agent.businessId,
+          requestedStart:  draft.requestedStart,
+          durationMinutes: 90,
+          partySize:       draft.partySize,
+          source:          "ai",
+          agentId:         agent._id,
+          callId,
+          customerName:    draft.customerName,
+          customerPhone:   draft.customerPhone,
+        });
+
+        if (result?.success && result.booking) {
+          // Calculate total
+          const total = orderDraft.items.reduce((sum, item) => {
+            const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+            return sum + (menuItem?.price || 0) * (item.quantity || 1);
+          }, 0);
+
+          // Save order
+          await Order.create({
+            callId,
+            businessId:      agent.businessId,
+            agentId:         agent._id,
+            customerName:    draft.customerName,
+            customerPhone:   draft.customerPhone || call.callerNumber,
+            items: orderDraft.items.map(item => {
+              const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+              return {
+                name:     item.name,
+                quantity: item.quantity || 1,
+                price:    menuItem?.price || 0,
+                extras:   item.extras || [],
+              };
+            }),
+            orderType: "dineIn",
+            total,
+            status: "confirmed",
+          });
+
+          // Clear drafts
+          await Call.updateOne(
+            { _id: call._id },
+            {
+              $set: {
+                "bookingDraft.partySize":      null,
+                "bookingDraft.requestedStart": null,
+                "bookingDraft.customerName":   null,
+              },
+            }
+          );
+
+          const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", {
+            hour: "numeric", minute: "2-digit", hour12: true,
+          });
+
+          const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
+
+          console.log("✅ Dine-in order + booking confirmed");
+          return {
+            response: `Perfect! Your table for ${draft.partySize} is booked at ${timeString} under ${draft.customerName}, and your ${itemsSummary} will be ready when you arrive. Total is ${total} AED. Is there anything else I can help you with?`,
+          };
+        }
+
+        if (result?.suggestedTime) {
+          const suggested = new Date(result.suggestedTime).toLocaleTimeString("en-US", {
+            hour: "numeric", minute: "2-digit", hour12: true,
+          });
+          return {
+            response: `We're fully booked at that time. Would ${suggested} work for you instead?`,
+          };
+        }
+
+        return {
+          response: "I'm sorry, we don't have availability for that time. Would you like to try a different time?",
+        };
+
+      } catch (err) {
+        console.error("❌ Dine-in order error:", err.message);
+        return {
+          response: "I'm sorry, something went wrong. Please try again.",
+        };
+      } finally {
+        processingCalls.delete(callId);
+      }
+    }
+
+    /**
+     * ================================
+     * BOOKING ONLY (no order)
+     * ================================
+     */
+    if (
+      bookingFlowActive &&
+      !orderFlowActive &&
+      draft.partySize &&
+      draft.requestedStart &&
+      draft.customerName
+    ) {
       const existingBooking = await Booking.findOne({
         callId,
         status: { $in: ["confirmed", "seated"] },
@@ -459,8 +580,6 @@ async function processLLMMessage(body, req) {
         });
 
         if (result?.success && result.booking) {
-          console.log("✅ Booking confirmed:", result.booking._id);
-
           await Call.updateOne(
             { _id: call._id },
             {
@@ -472,12 +591,8 @@ async function processLLMMessage(body, req) {
             }
           );
 
-          const timeString = new Date(
-            result.booking.startIso
-          ).toLocaleTimeString("en-US", {
-            hour: "numeric",
-            minute: "2-digit",
-            hour12: true,
+          const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", {
+            hour: "numeric", minute: "2-digit", hour12: true,
           });
 
           return {
@@ -486,10 +601,9 @@ async function processLLMMessage(body, req) {
         }
 
         if (result?.suggestedTime) {
-          const suggested = new Date(result.suggestedTime).toLocaleTimeString(
-            "en-US",
-            { hour: "numeric", minute: "2-digit", hour12: true }
-          );
+          const suggested = new Date(result.suggestedTime).toLocaleTimeString("en-US", {
+            hour: "numeric", minute: "2-digit", hour12: true,
+          });
           return {
             response: `We're fully booked at that time. Would ${suggested} work for you instead?`,
           };
@@ -511,84 +625,82 @@ async function processLLMMessage(body, req) {
 
     /**
      * ================================
-     * ORDER ENGINE
+     * PICKUP OR DELIVERY ORDER
      * ================================
      */
-    if (orderFlowActive && orderDraft.items?.length > 0) {
-
-      // Check if we need order type
-      if (!orderDraft.orderType && agent.features?.orders) {
-        const options = [];
-        if (agent.features.dineIn) options.push("dine in");
-        if (agent.features.pickup) options.push("pickup");
-        if (agent.features.delivery) options.push("delivery");
-
-        if (options.length > 1) {
-          return {
-            response: `Got it! Would you like to ${options.join(", or ")}?`,
-          };
-        } else {
-          orderDraft.orderType = options[0]?.replace(" ", "") || "dineIn";
+    if (
+      orderFlowActive &&
+      orderDraft.items?.length > 0 &&
+      orderDraft.orderType &&
+      orderDraft.orderType !== "dineIn"
+    ) {
+      // For delivery, need address and name
+      if (orderDraft.orderType === "delivery") {
+        if (!orderDraft.deliveryAddress) {
+          return { response: aiResponse || "What is your delivery address?" };
+        }
+        if (!draft.customerName) {
+          return { response: aiResponse || "And what name should I put the order under?" };
         }
       }
 
-      // Calculate total
+      // For pickup, just need name
+      if (orderDraft.orderType === "pickup" && !draft.customerName) {
+        return { response: aiResponse || "What name should I put the order under?" };
+      }
+
+      // All info collected — save order
+      const existingOrder = await Order.findOne({ callId });
+      if (existingOrder) {
+        return {
+          response: `Your order is already placed under ${draft.customerName || "your name"}. Is there anything else I can help you with?`,
+        };
+      }
+
       const total = orderDraft.items.reduce((sum, item) => {
         const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
         return sum + (menuItem?.price || 0) * (item.quantity || 1);
       }, 0);
 
-      // Save order to MongoDB
-      const Order = require("../models/Order");
-      const existingOrder = await Order.findOne({ callId });
+      await Order.create({
+        callId,
+        businessId:      agent.businessId,
+        agentId:         agent._id,
+        customerName:    draft.customerName || "Guest",
+        customerPhone:   draft.customerPhone || call.callerNumber,
+        deliveryAddress: orderDraft.deliveryAddress || null,
+        items: orderDraft.items.map(item => {
+          const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+          return {
+            name:     item.name,
+            quantity: item.quantity || 1,
+            price:    menuItem?.price || 0,
+            extras:   item.extras || [],
+          };
+        }),
+        orderType: orderDraft.orderType,
+        total,
+        status: "confirmed",
+      });
 
-      if (!existingOrder) {
-        await Order.create({
-          callId,
-          businessId: agent.businessId,
-          agentId: agent._id,
-          customerName: draft.customerName || "Guest",
-          customerPhone: draft.customerPhone || call.callerNumber,
-          items: orderDraft.items.map(item => {
-            const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
-            return {
-              name: item.name,
-              quantity: item.quantity || 1,
-              price: menuItem?.price || 0,
-              extras: item.extras || [],
-            };
-          }),
-          orderType: orderDraft.orderType,
-          total,
-          status: "confirmed",
-        });
+      console.log("✅ Order saved:", orderDraft.orderType);
 
-        console.log("✅ Order saved to MongoDB");
+      const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
 
-        const itemsSummary = orderDraft.items
-          .map(i => `${i.name} x${i.quantity || 1}`)
-          .join(", ");
+      const confirmMsg = orderDraft.orderType === "delivery"
+        ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
+        : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`;
 
-        return {
-          response: `Perfect! Your order for ${itemsSummary} has been placed. Total is ${total} AED. Is there anything else I can help you with?`,
-        };
-      }
-
-      return {
-        response: `Your order is already placed. Is there anything else I can help you with?`,
-      };
+      return { response: confirmMsg };
     }
 
-    // Fallback if nothing resolved
-    return {
-      response: aiResponse || "How can I help you?",
-    };
+    // Fallback
+    return { response: aiResponse || "How can I help you?" };
   }
 
   /**
    * ================================
-   * NON-BOOKING / NON-ORDER → AI FALLBACK
-   * Uses agent's custom prompt from MongoDB
+   * GENERAL FALLBACK → AI with agent prompt
    * ================================
    */
   const systemPrompt = buildSystemPrompt(agent);
