@@ -1,11 +1,14 @@
 // src/controllers/llmSocketController.js
 
+const OpenAI = require("openai");
 const Agent = require("../models/Agent");
 const Call = require("../models/Call");
 const Booking = require("../models/Booking");
 const Order = require("../models/Order");
 const { streamAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /**
  * ================================
@@ -182,68 +185,54 @@ Line 1: your short reply to the customer  (write only the word DONE if all requi
 Line 2: {"p":<number or null>,"t":"<HH:MM or null>","n":"<string or null>","ot":"<dineIn|pickup|delivery|null>","i":[{"name":"x","qty":1}],"a":"<address or null>"}`;
   }
 
-  // ── Streaming fetch ──────────────────────────────────────────────────────
-  let reader;
-  try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        max_tokens: 120,
-        stream: true,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-
-    if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`);
-    reader = res.body.getReader();
-  } catch (err) {
-    console.error("❌ OpenAI fetch error:", err.message);
-    return { extracted: {}, orderExtracted: {}, response: null, streamed: false };
-  }
-
-  const decoder = new TextDecoder();
-  let sseBuffer = "";
+  // ── SDK streaming (with non-streaming fallback) ──────────────────────────
   let textContent = "";
   let firstLineFired = false;
 
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    const stream = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      max_tokens: 120,
+      stream: true,
+      messages: [{ role: "user", content: prompt }],
+    });
 
-      sseBuffer += decoder.decode(value, { stream: true });
-      const lines = sseBuffer.split("\n");
-      sseBuffer = lines.pop() ?? "";
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content ?? "";
+      if (!delta) continue;
+      textContent += delta;
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const raw = line.slice(6).trim();
-        if (raw === "[DONE]") continue;
-        try {
-          const obj = JSON.parse(raw);
-          const delta = obj.choices?.[0]?.delta?.content ?? "";
-          if (delta) textContent += delta;
-        } catch {}
-      }
-
-      // As soon as line 1 is complete, fire sendChunk — don't wait for rest
+      // Fire sendChunk as soon as line 1 is complete — don't wait for the rest
       if (!firstLineFired && textContent.includes("\n")) {
         firstLineFired = true;
         const firstLine = textContent.substring(0, textContent.indexOf("\n")).trim();
-        // Accept any first line that isn't DONE or a JSON object as speech
         const isJson = firstLine.startsWith("{");
         if (firstLine && firstLine !== "DONE" && !isJson && sendChunk) {
           sendChunk(firstLine.replace(/^SPEAK:\s*/i, ""));
         }
       }
     }
-  } catch (err) {
-    console.error("❌ OpenAI stream read error:", err.message);
+  } catch (streamErr) {
+    console.error("❌ Streaming failed, falling back to non-streaming:", streamErr.message);
+    // Non-streaming fallback — guarantees we always get a response
+    try {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        max_tokens: 120,
+        messages: [{ role: "user", content: prompt }],
+      });
+      textContent = completion.choices?.[0]?.message?.content?.trim() ?? "";
+      // Still try to send the response line synchronously
+      if (sendChunk && textContent) {
+        const fallbackFirst = textContent.split("\n")[0]?.trim() ?? "";
+        const isJson = fallbackFirst.startsWith("{");
+        if (fallbackFirst && fallbackFirst !== "DONE" && !isJson) {
+          sendChunk(fallbackFirst.replace(/^SPEAK:\s*/i, ""));
+        }
+      }
+    } catch (fallbackErr) {
+      console.error("❌ Fallback also failed:", fallbackErr.message);
+    }
   }
 
   // ── Parse result ─────────────────────────────────────────────────────────
