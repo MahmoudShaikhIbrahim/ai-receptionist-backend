@@ -10,7 +10,7 @@ async function getAIResponse(messages) {
       model: "gpt-4o-mini",
       messages,
       temperature: 0.4,
-      max_tokens: 120,
+      max_tokens: 80,
     });
 
     return completion.choices?.[0]?.message?.content || "";
@@ -20,4 +20,33 @@ async function getAIResponse(messages) {
   }
 }
 
-module.exports = { getAIResponse };
+/**
+ * Streaming version — calls onChunk(text) as tokens arrive.
+ * Returns the full response string when done.
+ */
+async function streamAIResponse(messages, onChunk) {
+  try {
+    const stream = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages,
+      temperature: 0.4,
+      max_tokens: 80,
+      stream: true,
+    });
+
+    let fullText = "";
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content || "";
+      if (delta) {
+        fullText += delta;
+        if (onChunk) onChunk(delta);
+      }
+    }
+    return fullText;
+  } catch (error) {
+    console.error("OpenAI streaming error:", error.message);
+    return "";
+  }
+}
+
+module.exports = { getAIResponse, streamAIResponse };
