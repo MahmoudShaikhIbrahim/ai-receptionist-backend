@@ -77,13 +77,15 @@ function handleLLMWebSocket(ws, req) {
 
   const processedResponseIds = new Set();
 
-  // ✅ Initial greeting (keep or remove depending on Retell config)
+  // ✅ Initial greeting sent immediately on connect
   safeSend(ws, {
     response_id: 0,
     content: "Hello! Welcome to our restaurant. How can I help you today?",
     content_complete: true,
     end_call: false,
   });
+  // Mark response_id 0 as handled so Retell's initial response_required doesn't trigger a second greeting
+  processedResponseIds.add(0);
 
   ws.on("message", async (rawMessage) => {
     const messageStr = rawMessage.toString();

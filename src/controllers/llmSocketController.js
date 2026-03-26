@@ -9,6 +9,27 @@ const { findNearestAvailableSlot } = require("../services/bookingService");
 
 /**
  * ================================
+ * AGENT CACHE (reduces DB queries per message)
+ * ================================
+ */
+const agentCache = new Map(); // agentId -> { agent, timestamp }
+const AGENT_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function getCachedAgent(agentId) {
+  const key = agentId.toString();
+  const cached = agentCache.get(key);
+  if (cached && Date.now() - cached.timestamp < AGENT_CACHE_TTL) {
+    return cached.agent;
+  }
+  const agent = await Agent.findById(agentId).lean();
+  if (agent) {
+    agentCache.set(key, { agent, timestamp: Date.now() });
+  }
+  return agent;
+}
+
+/**
+ * ================================
  * FORMAT MENU FOR AI
  * ================================
  */
@@ -86,6 +107,7 @@ ${formatOpeningHours(agent.openingHours)}
 ${hasOrders && agent.menu?.length > 0 ? `Menu:\n${formatMenu(agent.menu)}` : ""}
 
 Rules:
+- The customer has already been greeted. Do NOT greet them again or say "Hello" or "Welcome".
 - Keep responses short and natural, suitable for a phone call
 - Never ask for the customer's phone number
 - Never mention dates for reservations, only times
@@ -103,7 +125,7 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
 
   const hasOrders = agent.features?.orders === true;
   const hasBookings = agent.features?.bookings !== false;
-  const isDineIn = orderDraft.orderType === "dineIn";
+  const currentOrderType = orderDraft.orderType;
 
   const recentConvo = (transcript ?? [])
     .slice(-6)
@@ -114,12 +136,28 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
     ? `Available menu:\n${formatMenu(agent.menu)}`
     : "";
 
+  // Build order-type-specific collection rules
+  let orderCollectionRules;
+  if (currentOrderType === "pickup") {
+    orderCollectionRules = `This is a PICKUP order. Collect ONLY the customer's name. Do NOT ask for party size, time, or delivery address.`;
+  } else if (currentOrderType === "delivery") {
+    orderCollectionRules = `This is a DELIVERY order. Collect delivery address and customer name ONLY. Do NOT ask for party size or time.`;
+  } else if (currentOrderType === "dineIn") {
+    orderCollectionRules = `This is a DINE-IN order. Collect party size, time, and customer name (same as a booking).`;
+  } else {
+    orderCollectionRules = `Order type not yet set. Ask for order type (dineIn, pickup, or delivery) if items have been ordered.`;
+  }
+
+  // Only show booking fields when relevant (dineIn or booking flow)
+  const showBookingStatus = !currentOrderType || currentOrderType === "dineIn";
+
   const prompt = `You are ${agent.agentName || "an AI receptionist"} at ${agent.businessName}.
 
-Current booking status:
+${showBookingStatus ? `Current booking status:
 - Party size: ${currentDraft.partySize ?? "not collected"}
 - Time: ${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "not collected"}
 - Name: ${currentDraft.customerName ?? "not collected"}
+` : `Customer name: ${currentDraft.customerName ?? "not collected"}`}
 
 Current order status:
 - Items ordered: ${orderDraft.items?.length > 0 ? orderDraft.items.map(i => `${i.name} x${i.quantity}`).join(", ") : "none"}
@@ -134,7 +172,7 @@ ${recentConvo}
 Customer just said: "${text}"
 
 Your job:
-1. Extract any booking info (party size, time, name)
+1. Extract any booking info (party size, time, name) — only if applicable
 2. Extract any order info (menu items, quantities, order type, delivery address)
 3. Respond naturally to move the conversation forward
 
@@ -143,14 +181,13 @@ Features enabled:
 - Orders: ${hasOrders}
 
 Rules:
+- Do NOT greet the customer. They have already been greeted.
 - Ask for ONE thing at a time
 - Never ask for phone number or date
 - Keep response short and warm like a real person on the phone
 - For orders, only accept items that exist on the menu
 - Order type can be: dineIn, pickup, or delivery
-- For dineIn orders, also collect party size, time, and name (same as a booking)
-- For delivery orders, collect delivery address and name
-- For pickup orders, collect name only
+- ${orderCollectionRules}
 - If all required info is collected, return null for response
 
 Respond ONLY with this JSON:
@@ -163,7 +200,7 @@ Respond ONLY with this JSON:
   "orderExtracted": {
     "items": [{ "name": "<item name>", "quantity": <number>, "extras": ["<extra name>"] }],
     "orderType": "<dineIn|pickup|delivery|null>",
-    "deliveryAddress": "<address or null>"
+    "deliveryAddress": "<full address exactly as spoken or null>"
   },
   "response": "<your natural reply or null if everything collected>"
 }
@@ -217,6 +254,11 @@ function looksLikeOrderIntent(text) {
   return /\b(order|food|eat|hungry|menu|delivery|pickup|take.?away|bring|want to eat)\b/i.test(text);
 }
 
+function looksLikeFarewell(text) {
+  if (!text) return false;
+  return /\b(bye|goodbye|good night|see you|gotta go|that.?s all|nothing else|all good|have a good)\b/i.test(text);
+}
+
 /**
  * ================================
  * IN-MEMORY LOCK
@@ -257,11 +299,11 @@ async function processLLMMessage(body, req) {
   }
 
   /**
-   * LOAD CALL
+   * LOAD CALL (single query with .lean() — no second query needed)
    */
   const call = await Call.findOne({
     $or: [{ callId }, { call_id: callId }],
-  });
+  }).lean();
 
   if (!call) {
     console.warn("⚠️ Call not found:", callId);
@@ -269,9 +311,9 @@ async function processLLMMessage(body, req) {
   }
 
   /**
-   * LOAD AGENT
+   * LOAD AGENT (cached)
    */
-  const agent = await Agent.findById(call.agentId).lean();
+  const agent = await getCachedAgent(call.agentId);
   if (!agent) {
     console.warn("⚠️ Agent not found for call:", callId);
     return { response: "Sorry, something went wrong." };
@@ -307,22 +349,44 @@ async function processLLMMessage(body, req) {
   const transcript = body.transcript ?? [];
 
   /**
-   * DRAFT STATE
+   * FAREWELL DETECTION — end call gracefully
    */
-  const freshCall = await Call.findOne({ _id: call._id }).lean();
+  if (looksLikeFarewell(latestUserText)) {
+    // Clear any drafts so nothing lingers
+    await Call.updateOne(
+      { _id: call._id },
+      {
+        $set: {
+          "bookingDraft.partySize":      null,
+          "bookingDraft.requestedStart": null,
+          "bookingDraft.customerName":   null,
+          "orderDraft.items":            [],
+          "orderDraft.orderType":        null,
+          "orderDraft.deliveryAddress":  null,
+        },
+      }
+    );
+    return {
+      response: "You're welcome! Have a wonderful day. Goodbye!",
+      end_call: true,
+    };
+  }
 
+  /**
+   * DRAFT STATE (use lean call document directly — no second DB query)
+   */
   let draft = {
-    partySize:      freshCall.bookingDraft?.partySize      ?? null,
-    requestedStart: freshCall.bookingDraft?.requestedStart ?? null,
-    customerName:   freshCall.bookingDraft?.customerName   ?? null,
-    customerPhone:  freshCall.bookingDraft?.customerPhone  ?? freshCall.callerNumber ?? phoneFromBody ?? null,
+    partySize:      call.bookingDraft?.partySize      ?? null,
+    requestedStart: call.bookingDraft?.requestedStart ?? null,
+    customerName:   call.bookingDraft?.customerName   ?? null,
+    customerPhone:  call.bookingDraft?.customerPhone  ?? call.callerNumber ?? phoneFromBody ?? null,
   };
 
   let orderDraft = {
-    items:           freshCall.orderDraft?.items           ?? [],
-    orderType:       freshCall.orderDraft?.orderType       ?? null,
-    status:          freshCall.orderDraft?.status          ?? null,
-    deliveryAddress: freshCall.orderDraft?.deliveryAddress ?? null,
+    items:           call.orderDraft?.items           ?? [],
+    orderType:       call.orderDraft?.orderType       ?? null,
+    status:          call.orderDraft?.status          ?? null,
+    deliveryAddress: call.orderDraft?.deliveryAddress ?? null,
   };
 
   /**
@@ -394,7 +458,8 @@ async function processLLMMessage(body, req) {
     if (orderExtracted.orderType) {
       orderDraft.orderType = orderExtracted.orderType;
     }
-    if (orderExtracted.deliveryAddress && !orderDraft.deliveryAddress) {
+    // Always update address if AI extracted one (allows correction on re-statement)
+    if (orderExtracted.deliveryAddress) {
       orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
     }
 
@@ -445,6 +510,20 @@ async function processLLMMessage(body, req) {
         // Check for existing order
         const existingOrder = await Order.findOne({ callId });
         if (existingOrder) {
+          // Order already saved — clear drafts and return farewell-friendly response
+          await Call.updateOne(
+            { _id: call._id },
+            {
+              $set: {
+                "bookingDraft.partySize":      null,
+                "bookingDraft.requestedStart": null,
+                "bookingDraft.customerName":   null,
+                "orderDraft.items":            [],
+                "orderDraft.orderType":        null,
+                "orderDraft.deliveryAddress":  null,
+              },
+            }
+          );
           return {
             response: `Your order and table are already confirmed under ${draft.customerName}. Is there anything else I can help you with?`,
           };
@@ -491,7 +570,7 @@ async function processLLMMessage(body, req) {
             status: "confirmed",
           });
 
-          // Clear drafts
+          // Clear all drafts after confirmation
           await Call.updateOne(
             { _id: call._id },
             {
@@ -499,6 +578,9 @@ async function processLLMMessage(body, req) {
                 "bookingDraft.partySize":      null,
                 "bookingDraft.requestedStart": null,
                 "bookingDraft.customerName":   null,
+                "orderDraft.items":            [],
+                "orderDraft.orderType":        null,
+                "orderDraft.deliveryAddress":  null,
               },
             }
           );
@@ -556,6 +638,17 @@ async function processLLMMessage(body, req) {
       });
 
       if (existingBooking) {
+        // Already confirmed — clear drafts
+        await Call.updateOne(
+          { _id: call._id },
+          {
+            $set: {
+              "bookingDraft.partySize":      null,
+              "bookingDraft.requestedStart": null,
+              "bookingDraft.customerName":   null,
+            },
+          }
+        );
         return {
           response: `Your reservation is already confirmed under ${draft.customerName}. Is there anything else I can help you with?`,
         };
@@ -652,6 +745,17 @@ async function processLLMMessage(body, req) {
       // All info collected — save order
       const existingOrder = await Order.findOne({ callId });
       if (existingOrder) {
+        // Already confirmed — clear drafts so we don't loop
+        await Call.updateOne(
+          { _id: call._id },
+          {
+            $set: {
+              "orderDraft.items":           [],
+              "orderDraft.orderType":       null,
+              "orderDraft.deliveryAddress": null,
+            },
+          }
+        );
         return {
           response: `Your order is already placed under ${draft.customerName || "your name"}. Is there anything else I can help you with?`,
         };
@@ -684,6 +788,18 @@ async function processLLMMessage(body, req) {
       });
 
       console.log("✅ Order saved:", orderDraft.orderType);
+
+      // Clear order drafts after confirmation so the flow doesn't repeat
+      await Call.updateOne(
+        { _id: call._id },
+        {
+          $set: {
+            "orderDraft.items":           [],
+            "orderDraft.orderType":       null,
+            "orderDraft.deliveryAddress": null,
+          },
+        }
+      );
 
       const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
 
