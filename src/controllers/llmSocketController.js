@@ -120,7 +120,7 @@ Rules:
  * COMBINED AI EXTRACTION + RESPONSE
  * ================================
  */
-async function extractAndRespond(text, currentDraft, orderDraft, transcript, agent) {
+async function extractAndRespond(text, currentDraft, orderDraft, transcript, agent, { bookingOnly = false } = {}) {
   if (!text || text.trim().length < 1) return { extracted: {}, orderExtracted: {}, response: null };
 
   const hasOrders = agent.features?.orders === true;
@@ -132,26 +132,76 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
     .map(t => `${t.role === "agent" ? "Agent" : "Customer"}: ${t.content}`)
     .join("\n");
 
-  const menuText = hasOrders && agent.menu?.length > 0
+  const menuText = !bookingOnly && hasOrders && agent.menu?.length > 0
     ? `Available menu:\n${formatMenu(agent.menu)}`
     : "";
 
-  // Build order-type-specific collection rules
-  let orderCollectionRules;
-  if (currentOrderType === "pickup") {
-    orderCollectionRules = `This is a PICKUP order. Collect ONLY the customer's name. Do NOT ask for party size, time, or delivery address.`;
-  } else if (currentOrderType === "delivery") {
-    orderCollectionRules = `This is a DELIVERY order. Collect delivery address and customer name ONLY. Do NOT ask for party size or time.`;
-  } else if (currentOrderType === "dineIn") {
-    orderCollectionRules = `This is a DINE-IN order. Collect party size, time, and customer name (same as a booking).`;
+  let prompt;
+
+  if (bookingOnly) {
+    // ── BOOKING-ONLY PROMPT ──────────────────────────────────────────────────
+    // The customer wants to book a table. Do NOT mention orders at all.
+    prompt = `You are ${agent.agentName || "an AI receptionist"} at ${agent.businessName}.
+
+The customer wants to BOOK A TABLE. This is a reservation request only — do NOT ask about food orders, order type, dine-in, pickup, or delivery.
+
+Current booking status:
+- Party size: ${currentDraft.partySize ?? "not collected"}
+- Time: ${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "not collected"}
+- Name: ${currentDraft.customerName ?? "not collected"}
+
+Recent conversation:
+${recentConvo}
+
+Customer just said: "${text}"
+
+Your job:
+1. Extract party size, time, and/or name if mentioned
+2. Ask for the next missing piece (party size → time → name)
+3. If all three are collected, return null for response
+
+Rules:
+- Do NOT greet the customer. They have already been greeted.
+- Do NOT ask about food, orders, dine-in, pickup, or delivery.
+- Never ask for phone number or date (only time/time-of-day)
+- Ask for ONE thing at a time
+- Keep response short and warm
+
+Respond ONLY with this JSON:
+{
+  "extracted": {
+    "partySize": <number or null>,
+    "time": "<HH:MM or null>",
+    "name": "<string or null>"
+  },
+  "orderExtracted": {
+    "items": [],
+    "orderType": null,
+    "deliveryAddress": null
+  },
+  "response": "<your natural reply or null if all three collected>"
+}
+
+Only JSON. No markdown. No explanation.`;
+
   } else {
-    orderCollectionRules = `Order type not yet set. Ask for order type (dineIn, pickup, or delivery) if items have been ordered.`;
-  }
+    // ── ORDER (or combined) PROMPT ───────────────────────────────────────────
+    // Build order-type-specific collection rules
+    let orderCollectionRules;
+    if (currentOrderType === "pickup") {
+      orderCollectionRules = `This is a PICKUP order. Collect ONLY the customer's name. Do NOT ask for party size, time, or delivery address.`;
+    } else if (currentOrderType === "delivery") {
+      orderCollectionRules = `This is a DELIVERY order. Collect delivery address and customer name ONLY. Do NOT ask for party size or time.`;
+    } else if (currentOrderType === "dineIn") {
+      orderCollectionRules = `This is a DINE-IN order. Collect party size, time, and customer name (same as a booking).`;
+    } else {
+      orderCollectionRules = `Order type not yet determined. Only ask for order type AFTER the customer has mentioned specific food items they want to order.`;
+    }
 
-  // Only show booking fields when relevant (dineIn or booking flow)
-  const showBookingStatus = !currentOrderType || currentOrderType === "dineIn";
+    // Only show booking fields when relevant (dineIn or booking flow)
+    const showBookingStatus = !currentOrderType || currentOrderType === "dineIn";
 
-  const prompt = `You are ${agent.agentName || "an AI receptionist"} at ${agent.businessName}.
+    prompt = `You are ${agent.agentName || "an AI receptionist"} at ${agent.businessName}.
 
 ${showBookingStatus ? `Current booking status:
 - Party size: ${currentDraft.partySize ?? "not collected"}
@@ -206,6 +256,7 @@ Respond ONLY with this JSON:
 }
 
 Only JSON. No markdown. No explanation.`;
+  }
 
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -418,7 +469,9 @@ async function processLLMMessage(body, req) {
   if (bookingFlowActive || orderFlowActive) {
 
     const { extracted, orderExtracted, response: aiResponse } =
-      await extractAndRespond(latestUserText, draft, orderDraft, transcript, agent);
+      await extractAndRespond(latestUserText, draft, orderDraft, transcript, agent, {
+        bookingOnly: bookingFlowActive && !orderFlowActive,
+      });
 
     console.log("🧠 Extracted:", extracted);
     console.log("🛒 Order extracted:", orderExtracted);
