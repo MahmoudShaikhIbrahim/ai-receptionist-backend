@@ -1,8 +1,6 @@
 const OpenAI = require("openai");
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 async function getAIResponse(messages) {
   try {
@@ -10,10 +8,9 @@ async function getAIResponse(messages) {
       model: "gpt-4o-mini",
       messages,
       temperature: 0.4,
-      max_tokens: 120,
+      max_tokens: 100,
     });
-
-    return completion.choices?.[0]?.message?.content || "";
+    return completion.choices?.[0]?.message?.content?.trim() || "";
   } catch (error) {
     console.error("OpenAI error:", error.message);
     return "";
