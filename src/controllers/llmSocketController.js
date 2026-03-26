@@ -143,9 +143,9 @@ Customer: "${text}"
 
 Ask for the NEXT missing item only. Never mention food, orders, or delivery.
 
-Reply in EXACTLY 2 lines:
-SPEAK: <short warm reply>   (write DONE instead if all 3 are collected)
-{"p":<number or null>,"t":"<HH:MM or null>","n":"<string or null>","ot":null,"i":[],"a":null}`;
+Your reply must be EXACTLY 2 lines with nothing else:
+Line 1: your short reply to the customer  (write only the word DONE if all 3 are collected)
+Line 2: {"p":<number or null>,"t":"<HH:MM or null>","n":"<string or null>","ot":null,"i":[],"a":null}`;
 
   } else {
     const ot = orderDraft.orderType;
@@ -177,9 +177,9 @@ Customer: "${text}"
 
 Ask for ONE missing item. Only accept menu items. No date, no phone.
 
-Reply in EXACTLY 2 lines:
-SPEAK: <short warm reply>   (write DONE instead if all required info is collected)
-{"p":<number or null>,"t":"<HH:MM or null>","n":"<string or null>","ot":"<dineIn|pickup|delivery|null>","i":[{"name":"x","qty":1}],"a":"<address or null>"}`;
+Your reply must be EXACTLY 2 lines with nothing else:
+Line 1: your short reply to the customer  (write only the word DONE if all required info is collected)
+Line 2: {"p":<number or null>,"t":"<HH:MM or null>","n":"<string or null>","ot":"<dineIn|pickup|delivery|null>","i":[{"name":"x","qty":1}],"a":"<address or null>"}`;
   }
 
   // ── Streaming fetch ──────────────────────────────────────────────────────
@@ -235,9 +235,10 @@ SPEAK: <short warm reply>   (write DONE instead if all required info is collecte
       if (!firstLineFired && textContent.includes("\n")) {
         firstLineFired = true;
         const firstLine = textContent.substring(0, textContent.indexOf("\n")).trim();
-        if (firstLine.startsWith("SPEAK:") && sendChunk) {
-          const speakText = firstLine.slice(6).trim();
-          if (speakText) sendChunk(speakText);
+        // Accept any first line that isn't DONE or a JSON object as speech
+        const isJson = firstLine.startsWith("{");
+        if (firstLine && firstLine !== "DONE" && !isJson && sendChunk) {
+          sendChunk(firstLine.replace(/^SPEAK:\s*/i, ""));
         }
       }
     }
@@ -246,10 +247,15 @@ SPEAK: <short warm reply>   (write DONE instead if all required info is collecte
   }
 
   // ── Parse result ─────────────────────────────────────────────────────────
-  const parts = textContent.split("\n");
-  const firstLine = (parts[0] || "").trim();
-  const responseText = firstLine.startsWith("SPEAK:") ? firstLine.slice(6).trim() : null;
-  const jsonLine = parts.slice(1).join("").trim();
+  const parts = textContent.split("\n").map(l => l.trim()).filter(Boolean);
+  const firstLine = parts[0] || "";
+  // Treat any first line that isn't DONE or JSON as the spoken response
+  const isJsonFirst = firstLine.startsWith("{");
+  const responseText = (firstLine && firstLine !== "DONE" && !isJsonFirst)
+    ? firstLine.replace(/^SPEAK:\s*/i, "").trim()
+    : null;
+  // JSON is everything after the first non-JSON line, or the whole thing if first line is JSON
+  const jsonLine = (isJsonFirst ? parts : parts.slice(1)).join("").trim();
 
   let extraction = {};
   try {
