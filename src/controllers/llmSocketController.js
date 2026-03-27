@@ -339,7 +339,7 @@ async function processLLMMessage(body, req) {
         console.error("❌ Time parsing error:", e);
       }
     }
-    if (extracted.name && !draft.customerName) {
+    if (extracted.name) {
       draft.customerName = extracted.name;
     }
 
