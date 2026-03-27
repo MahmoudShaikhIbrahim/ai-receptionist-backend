@@ -393,8 +393,15 @@ async function processLLMMessage(body, req) {
     const dineInComplete = orderDraft.orderType === "dineIn" &&
       orderDraft.items?.length > 0 &&
       draft.partySize && draft.requestedStart && draft.customerName;
+    const orderComplete =
+      orderFlowActive &&
+      orderDraft.items?.length > 0 &&
+      orderDraft.orderType &&
+      orderDraft.orderType !== "dineIn" &&
+      draft.customerName &&
+      (orderDraft.orderType !== "delivery" || orderDraft.deliveryAddress);
 
-    if (aiResponse && !bookingComplete && !dineInComplete) {
+    if (aiResponse && !bookingComplete && !dineInComplete && !orderComplete) {
       return { response: aiResponse };
     }
 
