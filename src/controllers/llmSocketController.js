@@ -296,8 +296,10 @@ async function processLLMMessage(body, req) {
   let awaitingReturnConfirmation = freshCall.meta?.awaitingReturnConfirmation ?? false;
   let returnConfirmed = freshCall.meta?.returnConfirmed ?? false;
 
-  if (callerPhone && !draft.customerName && !awaitingReturnConfirmation && !returnConfirmed) {
-    // Find the most recent previous call from this phone number (not this call)
+  // ── RETURNING CALLER — only triggered when customer mentions modify/cancel ──
+  const mentionsChange = /\b(cancel|change|modify|update|edit|fix|correct|i called|earlier|last time|my order|my booking|placed an order|made a booking)\b/i.test(latestUserText);
+
+  if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed) {
     const previousCall = await Call.findOne({
       _id: { $ne: freshCall._id },
       $or: [
@@ -308,26 +310,22 @@ async function processLLMMessage(body, req) {
     }).sort({ createdAt: -1 }).lean();
 
     if (previousCall) {
-      // Check for booking from that call
       const prevBooking = await Booking.findOne({
         callId: previousCall.callId,
         status: { $in: ["confirmed", "seated"] },
       }).lean();
 
-      // Check for order from that call
       const prevOrder = await Order.findOne({
         callId: previousCall.callId,
         status: { $in: ["confirmed", "preparing", "ready"] },
       }).lean();
 
-      // Use whichever is most recent
       if (prevBooking || prevOrder) {
         const name = prevBooking?.customerName || prevOrder?.customerName;
         if (name) {
           returningBooking = prevBooking;
           returningOrder = prevOrder;
 
-          // Build context string
           if (prevBooking) {
             const timeStr = new Date(prevBooking.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
             returningContext = `Booking for ${prevBooking.partySize} people at ${timeStr} under ${name}`;
@@ -336,7 +334,6 @@ async function processLLMMessage(body, req) {
             returningContext = `${prevOrder.orderType} order: ${itemsSummary} under ${name}`;
           }
 
-          // Mark as awaiting confirmation
           await Call.updateOne(
             { _id: freshCall._id },
             {
@@ -354,6 +351,8 @@ async function processLLMMessage(body, req) {
         }
       }
     }
+
+    // No previous record found — treat as new call
   }
 
   // ── HANDLE RETURNING CALLER CONFIRMATION ─────────────────
