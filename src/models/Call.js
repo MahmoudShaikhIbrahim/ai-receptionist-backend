@@ -57,20 +57,30 @@ const CallSchema = new mongoose.Schema(
       default: null,
     },
 
-    // ✅ Single unified booking draft (replaces bookingData + reservationDraft)
+    // ✅ Booking draft
     bookingDraft: {
-      partySize: { type: Number, default: null },
-      requestedStart: { type: Date, default: null },
-      customerName: { type: String, default: null },
-      customerPhone: { type: String, default: null },
+      partySize:      { type: Number, default: null },
+      requestedStart: { type: Date,   default: null },
+      customerName:   { type: String, default: null },
+      customerPhone:  { type: String, default: null },
     },
 
+    // 🛒 Order draft
     orderDraft: {
-  items: { type: Array, default: [] },
-  orderType: { type: String, default: null },
-  status: { type: String, default: null },
-  deliveryAddress: { type: String, default: null },
-},
+      items:           { type: Array,  default: [] },
+      orderType:       { type: String, default: null },
+      status:          { type: String, default: null },
+      deliveryAddress: { type: String, default: null },
+    },
+
+    // 📞 Returning caller meta
+    meta: {
+      awaitingReturnConfirmation: { type: Boolean, default: false },
+      returnConfirmed:            { type: Boolean, default: false },
+      returningName:              { type: String,  default: null },
+      returningBookingId:         { type: String,  default: null },
+      returningOrderId:           { type: String,  default: null },
+    },
 
     // 📝 AI outputs
     summary: {
