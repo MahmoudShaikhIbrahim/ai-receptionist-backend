@@ -262,7 +262,7 @@ async function processLLMMessage(body, req) {
   /**
    * LOAD AGENT
    */
-  const agent = await Agent.findById(call.agentId).lean();
+  const agent = await Agent.findById(freshCall.agentId).lean();
   if (!agent) {
     console.warn("⚠️ Agent not found for call:", callId);
     return { response: "Sorry, something went wrong." };
