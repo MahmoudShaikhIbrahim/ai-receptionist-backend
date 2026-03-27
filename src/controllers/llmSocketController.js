@@ -345,8 +345,11 @@ async function processLLMMessage(body, req) {
 
     // Update order draft — deduplicated
     if (orderExtracted.items?.length > 0) {
-      const validItems = orderExtracted.items.filter(item =>
-        agent.menu?.some(m => m.name.toLowerCase() === item.name.toLowerCase() && m.available)
+      const normalizedItems = orderExtracted.items.map(item =>
+        typeof item === "string" ? { name: item, quantity: 1, extras: [] } : item
+      );
+      const validItems = normalizedItems.filter(item =>
+        item?.name && agent.menu?.some(m => m.name.toLowerCase() === item.name.toLowerCase() && m.available)
       );
       for (const newItem of validItems) {
         const exists = orderDraft.items.some(
