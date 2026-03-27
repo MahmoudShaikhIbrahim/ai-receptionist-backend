@@ -106,7 +106,7 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
   const isDineIn = orderDraft.orderType === "dineIn";
 
   const recentConvo = (transcript ?? [])
-    .slice(-6)
+    .slice(-4)
     .map(t => `${t.role === "agent" ? "Agent" : "Customer"}: ${t.content}`)
     .join("\n");
 
@@ -179,7 +179,8 @@ Only JSON. No markdown. No explanation.`;
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        max_tokens: 300,
+        max_tokens: 200,
+        temperature: 0.3,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -256,17 +257,7 @@ async function processLLMMessage(body, req) {
     return { response: "Sorry, something went wrong." };
   }
 
-  /**
-   * LOAD CALL
-   */
-  const call = await Call.findOne({
-    $or: [{ callId }, { call_id: callId }],
-  });
-
-  if (!call) {
-    console.warn("⚠️ Call not found:", callId);
-    return { response: "Sorry, something went wrong." };
-  }
+ 
 
   /**
    * LOAD AGENT
@@ -288,12 +279,12 @@ async function processLLMMessage(body, req) {
     body?.from_number ||
     null;
 
-  if (!call.callerNumber && phoneFromBody) {
+  if (!freshCall.callerNumber && phoneFromBody) {
     await Call.updateOne(
-      { _id: call._id },
+      { _id: freshCall._id },
       { $set: { callerNumber: phoneFromBody } }
     );
-    call.callerNumber = phoneFromBody;
+    freshCall.callerNumber = phoneFromBody;
   }
 
   /**
@@ -309,7 +300,14 @@ async function processLLMMessage(body, req) {
   /**
    * DRAFT STATE
    */
-  const freshCall = await Call.findOne({ _id: call._id }).lean();
+  const freshCall = await Call.findOne({
+    $or: [{ callId }, { call_id: callId }],
+  }).lean();
+
+  if (!freshCall) {
+    console.warn("⚠️ Call not found:", callId);
+    return { response: "Sorry, something went wrong." };
+  }
 
   let draft = {
     partySize:      freshCall.bookingDraft?.partySize      ?? null,
@@ -394,13 +392,13 @@ async function processLLMMessage(body, req) {
     if (orderExtracted.orderType) {
       orderDraft.orderType = orderExtracted.orderType;
     }
-    if (orderExtracted.deliveryAddress && !orderDraft.deliveryAddress) {
+    if (orderExtracted.deliveryAddress) {
       orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
     }
 
     // Save drafts to MongoDB
     await Call.updateOne(
-      { _id: call._id },
+      { _id: freshCall._id },
       {
         $set: {
           "bookingDraft.partySize":      draft.partySize,
@@ -476,7 +474,7 @@ async function processLLMMessage(body, req) {
             businessId:      agent.businessId,
             agentId:         agent._id,
             customerName:    draft.customerName,
-            customerPhone:   draft.customerPhone || call.callerNumber,
+            customerPhone:   draft.customerPhone || freshCall.callerNumber,
             items: orderDraft.items.map(item => {
               const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
               return {
@@ -493,7 +491,7 @@ async function processLLMMessage(body, req) {
 
           // Clear drafts
           await Call.updateOne(
-            { _id: call._id },
+            { _id: freshCall._id },
             {
               $set: {
                 "bookingDraft.partySize":      null,
@@ -581,7 +579,7 @@ async function processLLMMessage(body, req) {
 
         if (result?.success && result.booking) {
           await Call.updateOne(
-            { _id: call._id },
+            { _id: freshCall._id },
             {
               $set: {
                 "bookingDraft.partySize":      null,
@@ -667,7 +665,7 @@ async function processLLMMessage(body, req) {
         businessId:      agent.businessId,
         agentId:         agent._id,
         customerName:    draft.customerName || "Guest",
-        customerPhone:   draft.customerPhone || call.callerNumber,
+        customerPhone:   draft.customerPhone || freshCall.callerNumber,
         deliveryAddress: orderDraft.deliveryAddress || null,
         items: orderDraft.items.map(item => {
           const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
@@ -685,6 +683,19 @@ async function processLLMMessage(body, req) {
 
       console.log("✅ Order saved:", orderDraft.orderType);
 
+
+      await Call.updateOne(
+        { _id: freshCall._id },
+        {
+          $set: {
+            "orderDraft.items":           [],
+            "orderDraft.orderType":       null,
+            "orderDraft.deliveryAddress": null,
+            "orderDraft.status":          "confirmed",
+          },
+        }
+      );
+
       const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
 
       const confirmMsg = orderDraft.orderType === "delivery"
@@ -696,6 +707,15 @@ async function processLLMMessage(body, req) {
 
     // Fallback
     return { response: aiResponse || "How can I help you?" };
+  }
+
+/**
+   * ================================
+   * GOODBYE DETECTION
+   * ================================
+   */
+  if (/\b(bye|goodbye|thank you|thanks|that's all|nothing else|no thank|bye bye)\b/i.test(latestUserText)) {
+    return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
   }
 
   /**
