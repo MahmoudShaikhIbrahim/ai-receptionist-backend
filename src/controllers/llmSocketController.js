@@ -89,6 +89,8 @@ Rules:
 - Keep responses short and natural, suitable for a phone call
 - Never ask for the customer's phone number
 - Never mention dates for reservations, only times
+- NEVER suggest ordering or ask if customer wants to order after a booking is confirmed
+- NEVER ask party size or time for pickup or delivery orders
 - If asked about something not on the menu, politely say it is not available
 - Always be warm and welcoming`;
 }
@@ -351,9 +353,13 @@ async function processLLMMessage(body, req) {
    */
   if (bookingFlowActive || orderFlowActive) {
 
+    // Check goodbye FIRST before calling OpenAI
+    if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
+      return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
+    }
+
     const { extracted, orderExtracted, response: aiResponse } =
       await extractAndRespond(latestUserText, draft, orderDraft, transcript, agent);
-
     console.log("🧠 Extracted:", extracted);
     console.log("🛒 Order extracted:", orderExtracted);
 
@@ -416,8 +422,14 @@ async function processLLMMessage(body, req) {
     console.log("📋 Booking draft:", draft);
     console.log("🛒 Order draft:", orderDraft);
 
-    // If AI still has a response, return it
-    if (aiResponse) {
+    // Only return AI response if booking is NOT complete
+    // If booking is complete, fall through to the booking engine
+    const bookingComplete = draft.partySize && draft.requestedStart && draft.customerName;
+    const dineInComplete = orderDraft.orderType === "dineIn" &&
+      orderDraft.items?.length > 0 &&
+      draft.partySize && draft.requestedStart && draft.customerName;
+
+    if (aiResponse && !bookingComplete && !dineInComplete) {
       return { response: aiResponse };
     }
 
@@ -489,7 +501,7 @@ async function processLLMMessage(body, req) {
             status: "confirmed",
           });
 
-          // Clear drafts
+          // Clear ALL drafts
           await Call.updateOne(
             { _id: freshCall._id },
             {
@@ -497,6 +509,10 @@ async function processLLMMessage(body, req) {
                 "bookingDraft.partySize":      null,
                 "bookingDraft.requestedStart": null,
                 "bookingDraft.customerName":   null,
+                "orderDraft.items":            [],
+                "orderDraft.orderType":        null,
+                "orderDraft.deliveryAddress":  null,
+                "orderDraft.status":           "confirmed",
               },
             }
           );
