@@ -7,14 +7,8 @@ const Order = require("../models/Order");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
-/**
- * ================================
- * FORMAT MENU FOR AI
- * ================================
- */
 function formatMenu(menu) {
   if (!menu || menu.length === 0) return "No menu available.";
-
   const categories = {};
   for (const item of menu) {
     if (!item.available) continue;
@@ -22,15 +16,12 @@ function formatMenu(menu) {
     if (!categories[cat]) categories[cat] = [];
     categories[cat].push(item);
   }
-
   return Object.entries(categories)
     .map(([cat, items]) => {
       const lines = items.map(i => {
         let line = `  - ${i.name}: ${i.price} ${i.currency || "AED"}`;
         if (i.description) line += ` — ${i.description}`;
-        if (i.extras?.length) {
-          line += ` (Extras: ${i.extras.map(e => `${e.name} +${e.price}`).join(", ")})`;
-        }
+        if (i.extras?.length) line += ` (Extras: ${i.extras.map(e => `${e.name} +${e.price}`).join(", ")})`;
         return line;
       });
       return `${cat}:\n${lines.join("\n")}`;
@@ -38,14 +29,9 @@ function formatMenu(menu) {
     .join("\n\n");
 }
 
-/**
- * ================================
- * FORMAT OPENING HOURS FOR AI
- * ================================
- */
 function formatOpeningHours(openingHours) {
   if (!openingHours) return "Opening hours not set.";
-  const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  const days = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
   return days.map(day => {
     const h = openingHours[day];
     if (!h || h.closed) return `${day.charAt(0).toUpperCase() + day.slice(1)}: Closed`;
@@ -54,11 +40,6 @@ function formatOpeningHours(openingHours) {
   }).join("\n");
 }
 
-/**
- * ================================
- * BUILD SYSTEM PROMPT FROM AGENT
- * ================================
- */
 function buildSystemPrompt(agent) {
   const hasBookings = agent.features?.bookings !== false;
   const hasOrders = agent.features?.orders === true;
@@ -95,17 +76,11 @@ Rules:
 - Always be warm and welcoming`;
 }
 
-/**
- * ================================
- * COMBINED AI EXTRACTION + RESPONSE
- * ================================
- */
 async function extractAndRespond(text, currentDraft, orderDraft, transcript, agent) {
   if (!text || text.trim().length < 1) return { extracted: {}, orderExtracted: {}, response: null };
 
   const hasOrders = agent.features?.orders === true;
   const hasBookings = agent.features?.bookings !== false;
-  const isDineIn = orderDraft.orderType === "dineIn";
 
   const recentConvo = (transcript ?? [])
     .slice(-4)
@@ -116,15 +91,43 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
     ? `Available menu:\n${formatMenu(agent.menu)}`
     : "";
 
-  const prompt = `Receptionist at ${agent.businessName}.
-State: party=${currentDraft.partySize ?? "?"} time=${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}) : "?"} name=${currentDraft.customerName ?? "?"} items=${orderDraft.items?.length > 0 ? orderDraft.items.map(i=>`${i.name}x${i.quantity}`).join(",") : "none"} type=${orderDraft.orderType ?? "?"} address=${orderDraft.deliveryAddress ?? "?"}
+  const prompt = `You are a receptionist at ${agent.businessName}.
+
+Current state:
+- Booking: partySize=${currentDraft.partySize ?? "not collected"}, time=${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}) : "not collected"}, name=${currentDraft.customerName ?? "not collected"}
+- Order: items=${orderDraft.items?.length > 0 ? orderDraft.items.map(i=>`${i.name}x${i.quantity}`).join(",") : "none"}, type=${orderDraft.orderType ?? "not set"}, address=${orderDraft.deliveryAddress ?? "not collected"}
+
 ${menuText}
-Last 4 messages:
+
+Recent conversation:
 ${recentConvo}
-Customer: "${text}"
-Rules: short warm replies. Never ask phone/date. pickup/delivery=NO partySize/time. delivery=ask items FIRST then address then name. pickup=ask items then name. dineIn=items+partySize+time+name. Never suggest ordering unless customer asks. Capture address exactly as spoken.
-Reply JSON only:
-{"extracted":{"partySize":null,"time":null,"name":null},"orderExtracted":{"items":[],"orderType":null,"deliveryAddress":null},"response":"reply or null"}`;
+
+Customer just said: "${text}"
+
+STRICT RULES:
+- NEVER assume orderType. Only set orderType if customer explicitly says dineIn, pickup, or delivery. If customer just says "I want to order" without specifying, ask "Would you like delivery, pickup, or dine-in?"
+- For pickup: collect items first, then name. Never ask for address or party size.
+- For delivery: collect items first, then address (word for word), then name. Never ask for party size.
+- For dineIn: collect items, party size, time, and name.
+- Never ask for phone number or date.
+- Keep responses short and warm.
+- If customer corrects their name, use the corrected name.
+- If all required info collected, return null for response.
+
+Respond ONLY with this JSON (no markdown):
+{
+  "extracted": {
+    "partySize": <number or null>,
+    "time": "<HH:MM 24hr or null>",
+    "name": "<string or null>"
+  },
+  "orderExtracted": {
+    "items": [{"name": "<exact menu item name>", "quantity": <number>, "extras": []}],
+    "orderType": "<dineIn|pickup|delivery|null>",
+    "deliveryAddress": "<exact address as spoken or null>"
+  },
+  "response": "<your reply or null>"
+}`;
 
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -159,11 +162,6 @@ Reply JSON only:
   }
 }
 
-/**
- * ================================
- * INTENT DETECTION
- * ================================
- */
 function looksLikeBookingIntent(text) {
   if (!text) return false;
   return /\b(book|reserve|reservation|table)\b/i.test(text);
@@ -174,18 +172,8 @@ function looksLikeOrderIntent(text) {
   return /\b(order|food|eat|hungry|menu|delivery|pickup|take.?away|bring|want to eat)\b/i.test(text);
 }
 
-/**
- * ================================
- * IN-MEMORY LOCK
- * ================================
- */
 const processingCalls = new Set();
 
-/**
- * ================================
- * MAIN CONTROLLER
- * ================================
- */
 async function processLLMMessage(body, req) {
   console.log("🎯 WEBSOCKET LLM CONTROLLER HIT");
 
@@ -193,9 +181,7 @@ async function processLLMMessage(body, req) {
   if (interactionType === "ping_pong") return null;
   if (interactionType !== "response_required") return null;
 
- /**
-   * CALL ID
-   */
+  // ── CALL ID ──────────────────────────────────────────────
   let callId =
     body.call_id ||
     body.callId ||
@@ -213,9 +199,7 @@ async function processLLMMessage(body, req) {
     return { response: "Sorry, something went wrong." };
   }
 
-  /**
-   * LOAD CALL — single query
-   */
+  // ── SINGLE DB QUERY ──────────────────────────────────────
   const freshCall = await Call.findOne({
     $or: [{ callId }, { call_id: callId }],
   }).lean();
@@ -225,18 +209,14 @@ async function processLLMMessage(body, req) {
     return { response: "Sorry, something went wrong." };
   }
 
-  /**
-   * LOAD AGENT
-   */
+  // ── LOAD AGENT ───────────────────────────────────────────
   const agent = await Agent.findById(freshCall.agentId).lean();
   if (!agent) {
     console.warn("⚠️ Agent not found for call:", callId);
     return { response: "Sorry, something went wrong." };
   }
 
-  /**
-   * PHONE NUMBER
-   */
+  // ── PHONE NUMBER ─────────────────────────────────────────
   const phoneFromBody =
     body?.call?.from_number ||
     body?.call?.caller_id ||
@@ -252,24 +232,24 @@ async function processLLMMessage(body, req) {
     );
   }
 
-  /**
-   * USER TEXT
-   */
+  const callerPhone = freshCall.callerNumber || phoneFromBody || null;
+
+  // ── USER TEXT ────────────────────────────────────────────
   const latestUserText =
     typeof body.latest_user_text === "string"
       ? body.latest_user_text.trim()
       : "";
 
   const transcript = body.transcript ?? [];
-  /**
-   * DRAFT STATE
-   */
 
+  console.log(`🗣 User: ${latestUserText}`);
+
+  // ── DRAFT STATE ──────────────────────────────────────────
   let draft = {
     partySize:      freshCall.bookingDraft?.partySize      ?? null,
     requestedStart: freshCall.bookingDraft?.requestedStart ?? null,
     customerName:   freshCall.bookingDraft?.customerName   ?? null,
-    customerPhone:  freshCall.bookingDraft?.customerPhone  ?? freshCall.callerNumber ?? phoneFromBody ?? null,
+    customerPhone:  freshCall.bookingDraft?.customerPhone  ?? callerPhone,
   };
 
   let orderDraft = {
@@ -279,13 +259,29 @@ async function processLLMMessage(body, req) {
     deliveryAddress: freshCall.orderDraft?.deliveryAddress ?? null,
   };
 
-  /**
-   * INTENT DETECTION
-   */
-  const recentTranscriptText = transcript
-    .slice(-4)
-    .map(t => t.content)
-    .join(" ");
+  // ── ORDER ALREADY CONFIRMED ───────────────────────────────
+  if (orderDraft.status === "confirmed") {
+    if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
+      return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
+    }
+    // Reset if they want something new
+    if (looksLikeBookingIntent(latestUserText) || looksLikeOrderIntent(latestUserText)) {
+      orderDraft = { items: [], orderType: null, status: null, deliveryAddress: null };
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: {
+          "orderDraft.items": [],
+          "orderDraft.orderType": null,
+          "orderDraft.status": null,
+          "orderDraft.deliveryAddress": null,
+        }
+      });
+    } else {
+      return { response: "Is there anything else I can help you with?" };
+    }
+  }
+
+  // ── INTENT DETECTION ─────────────────────────────────────
+  const recentTranscriptText = transcript.slice(-4).map(t => t.content).join(" ");
 
   const bookingFlowActive =
     !!draft.partySize ||
@@ -302,30 +298,21 @@ async function processLLMMessage(body, req) {
       looksLikeOrderIntent(recentTranscriptText)
     );
 
-  /**
-   * ACTIVE FLOW
-   */
+  // ── ACTIVE FLOW ───────────────────────────────────────────
   if (bookingFlowActive || orderFlowActive) {
 
-    // If order already confirmed, don't re-enter order flow
-    if (orderDraft.status === "confirmed") {
-      if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
-        return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
-      }
-      return { response: "Is there anything else I can help you with?" };
-    }
-
-    // Check goodbye FIRST before calling OpenAI
+    // Goodbye check first
     if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
       return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
     }
 
     const { extracted, orderExtracted, response: aiResponse } =
       await extractAndRespond(latestUserText, draft, orderDraft, transcript, agent);
+
     console.log("🧠 Extracted:", extracted);
     console.log("🛒 Order extracted:", orderExtracted);
 
-    // Update booking draft
+    // Update booking draft fields
     if (extracted.partySize && !draft.partySize) {
       draft.partySize = extracted.partySize;
     }
@@ -339,30 +326,35 @@ async function processLLMMessage(body, req) {
         console.error("❌ Time parsing error:", e);
       }
     }
+    // Always update name if AI extracted one (allows corrections)
     if (extracted.name) {
       draft.customerName = extracted.name;
     }
 
-    // Update order draft — deduplicated
+    // Update order draft — normalize and deduplicate items
     if (orderExtracted.items?.length > 0) {
       const normalizedItems = orderExtracted.items.map(item =>
-        typeof item === "string" ? { name: item, quantity: 1, extras: [] } : item
+        typeof item === "string"
+          ? { name: item, quantity: 1, extras: [] }
+          : { name: item.name || item.item, quantity: item.quantity || 1, extras: item.extras || [] }
       );
       const validItems = normalizedItems.filter(item =>
         item?.name && agent.menu?.some(m => m.name.toLowerCase() === item.name.toLowerCase() && m.available)
       );
       for (const newItem of validItems) {
         const exists = orderDraft.items.some(
-          existing => existing.name.toLowerCase() === newItem.name.toLowerCase()
+          e => e.name.toLowerCase() === newItem.name.toLowerCase()
         );
-        if (!exists) {
-          orderDraft.items.push(newItem);
-        }
+        if (!exists) orderDraft.items.push(newItem);
       }
     }
+
+    // Only update orderType if not already set, UNLESS customer is changing it
     if (orderExtracted.orderType) {
       orderDraft.orderType = orderExtracted.orderType;
     }
+
+    // Always update delivery address if provided
     if (orderExtracted.deliveryAddress) {
       orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
     }
@@ -387,52 +379,43 @@ async function processLLMMessage(body, req) {
     console.log("📋 Booking draft:", draft);
     console.log("🛒 Order draft:", orderDraft);
 
-    // Only return AI response if booking is NOT complete
-    // If booking is complete, fall through to the booking engine
-    const bookingComplete = draft.partySize && draft.requestedStart && draft.customerName;
-    const dineInComplete = orderDraft.orderType === "dineIn" &&
+    // ── CHECK WHAT IS COMPLETE ────────────────────────────
+    const bookingComplete =
+      bookingFlowActive && !orderFlowActive &&
+      draft.partySize && draft.requestedStart && draft.customerName;
+
+    const dineInComplete =
+      orderDraft.orderType === "dineIn" &&
       orderDraft.items?.length > 0 &&
       draft.partySize && draft.requestedStart && draft.customerName;
-    const orderComplete =
-      orderFlowActive &&
-      orderDraft.items?.length > 0 &&
-      orderDraft.orderType &&
-      orderDraft.orderType !== "dineIn" &&
-      draft.customerName &&
-      (orderDraft.orderType !== "delivery" || orderDraft.deliveryAddress);
 
-    if (aiResponse && !bookingComplete && !dineInComplete && !orderComplete) {
+    const pickupComplete =
+      orderDraft.orderType === "pickup" &&
+      orderDraft.items?.length > 0 &&
+      draft.customerName;
+
+    const deliveryComplete =
+      orderDraft.orderType === "delivery" &&
+      orderDraft.items?.length > 0 &&
+      orderDraft.deliveryAddress &&
+      draft.customerName;
+
+    // Only return AI response if nothing is ready to save yet
+    if (aiResponse && !bookingComplete && !dineInComplete && !pickupComplete && !deliveryComplete) {
       return { response: aiResponse };
     }
 
-    /**
-     * ================================
-     * DINE-IN ORDER → SAVE ORDER + BOOKING
-     * ================================
-     */
-    if (
-      orderFlowActive &&
-      orderDraft.orderType === "dineIn" &&
-      orderDraft.items?.length > 0 &&
-      draft.partySize &&
-      draft.requestedStart &&
-      draft.customerName
-    ) {
-      if (processingCalls.has(callId)) {
-        return { response: "One moment please..." };
-      }
+    // ── DINE-IN: SAVE ORDER + BOOKING ────────────────────
+    if (dineInComplete) {
+      if (processingCalls.has(callId)) return { response: "One moment please..." };
       processingCalls.add(callId);
 
       try {
-        // Check for existing order
         const existingOrder = await Order.findOne({ callId });
         if (existingOrder) {
-          return {
-            response: `Your order and table are already confirmed under ${draft.customerName}. Is there anything else I can help you with?`,
-          };
+          return { response: `Your order and table are already confirmed under ${draft.customerName}. Is there anything else I can help you with?` };
         }
 
-        // Run booking engine
         const result = await findNearestAvailableSlot({
           businessId:      agent.businessId,
           requestedStart:  draft.requestedStart,
@@ -446,110 +429,67 @@ async function processLLMMessage(body, req) {
         });
 
         if (result?.success && result.booking) {
-          // Calculate total
           const total = orderDraft.items.reduce((sum, item) => {
             const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
             return sum + (menuItem?.price || 0) * (item.quantity || 1);
           }, 0);
 
-          // Save order
           await Order.create({
             callId,
-            businessId:      agent.businessId,
-            agentId:         agent._id,
-            customerName:    draft.customerName,
-            customerPhone:   draft.customerPhone || freshCall.callerNumber,
+            businessId:    agent.businessId,
+            agentId:       agent._id,
+            customerName:  draft.customerName,
+            customerPhone: draft.customerPhone || callerPhone,
             items: orderDraft.items.map(item => {
               const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
-              return {
-                name:     item.name,
-                quantity: item.quantity || 1,
-                price:    menuItem?.price || 0,
-                extras:   item.extras || [],
-              };
+              return { name: item.name, quantity: item.quantity || 1, price: menuItem?.price || 0, extras: item.extras || [] };
             }),
             orderType: "dineIn",
             total,
             status: "confirmed",
           });
 
-          // Clear ALL drafts
-          await Call.updateOne(
-            { _id: freshCall._id },
-            {
-              $set: {
-                "bookingDraft.partySize":      null,
-                "bookingDraft.requestedStart": null,
-                "bookingDraft.customerName":   null,
-                "orderDraft.items":            [],
-                "orderDraft.orderType":        null,
-                "orderDraft.deliveryAddress":  null,
-                "orderDraft.status":           "confirmed",
-              },
-            }
-          );
-
-          const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", {
-            hour: "numeric", minute: "2-digit", hour12: true,
+          await Call.updateOne({ _id: freshCall._id }, {
+            $set: {
+              "bookingDraft.partySize":      null,
+              "bookingDraft.requestedStart": null,
+              "bookingDraft.customerName":   null,
+              "orderDraft.items":            [],
+              "orderDraft.orderType":        null,
+              "orderDraft.deliveryAddress":  null,
+              "orderDraft.status":           "confirmed",
+            },
           });
 
+          const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
           const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
-
           console.log("✅ Dine-in order + booking confirmed");
-          return {
-            response: `Perfect! Your table for ${draft.partySize} is booked at ${timeString} under ${draft.customerName}, and your ${itemsSummary} will be ready when you arrive. Total is ${total} AED. Is there anything else I can help you with?`,
-          };
+          return { response: `Perfect! Your table for ${draft.partySize} is booked at ${timeString} under ${draft.customerName}, and your ${itemsSummary} will be ready when you arrive. Total is ${total} AED. Is there anything else I can help you with?` };
         }
 
         if (result?.suggestedTime) {
-          const suggested = new Date(result.suggestedTime).toLocaleTimeString("en-US", {
-            hour: "numeric", minute: "2-digit", hour12: true,
-          });
-          return {
-            response: `We're fully booked at that time. Would ${suggested} work for you instead?`,
-          };
+          const suggested = new Date(result.suggestedTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          return { response: `We're fully booked at that time. Would ${suggested} work for you instead?` };
         }
 
-        return {
-          response: "I'm sorry, we don't have availability for that time. Would you like to try a different time?",
-        };
+        return { response: "I'm sorry, we don't have availability for that time. Would you like to try a different time?" };
 
       } catch (err) {
-        console.error("❌ Dine-in order error:", err.message);
-        return {
-          response: "I'm sorry, something went wrong. Please try again.",
-        };
+        console.error("❌ Dine-in error:", err.message);
+        return { response: "I'm sorry, something went wrong. Please try again." };
       } finally {
         processingCalls.delete(callId);
       }
     }
 
-    /**
-     * ================================
-     * BOOKING ONLY (no order)
-     * ================================
-     */
-    if (
-      bookingFlowActive &&
-      !orderFlowActive &&
-      draft.partySize &&
-      draft.requestedStart &&
-      draft.customerName
-    ) {
-      const existingBooking = await Booking.findOne({
-        callId,
-        status: { $in: ["confirmed", "seated"] },
-      });
-
+    // ── BOOKING ONLY ──────────────────────────────────────
+    if (bookingComplete) {
+      const existingBooking = await Booking.findOne({ callId, status: { $in: ["confirmed", "seated"] } });
       if (existingBooking) {
-        return {
-          response: `Your reservation is already confirmed under ${draft.customerName}. Is there anything else I can help you with?`,
-        };
+        return { response: `Your reservation is already confirmed under ${draft.customerName}. Is there anything else I can help you with?` };
       }
 
-      if (processingCalls.has(callId)) {
-        return { response: "One moment please..." };
-      }
+      if (processingCalls.has(callId)) return { response: "One moment please..." };
       processingCalls.add(callId);
 
       try {
@@ -566,81 +506,39 @@ async function processLLMMessage(body, req) {
         });
 
         if (result?.success && result.booking) {
-          await Call.updateOne(
-            { _id: freshCall._id },
-            {
-              $set: {
-                "bookingDraft.partySize":      null,
-                "bookingDraft.requestedStart": null,
-                "bookingDraft.customerName":   null,
-              },
-            }
-          );
-
-          const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", {
-            hour: "numeric", minute: "2-digit", hour12: true,
+          await Call.updateOne({ _id: freshCall._id }, {
+            $set: {
+              "bookingDraft.partySize":      null,
+              "bookingDraft.requestedStart": null,
+              "bookingDraft.customerName":   null,
+            },
           });
 
-          return {
-            response: `Perfect! Your table for ${draft.partySize} is confirmed at ${timeString} under ${draft.customerName}. Is there anything else I can help you with?`,
-          };
+          const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          console.log("✅ Booking confirmed");
+          return { response: `Perfect! Your table for ${draft.partySize} is confirmed at ${timeString} under ${draft.customerName}. Is there anything else I can help you with?` };
         }
 
         if (result?.suggestedTime) {
-          const suggested = new Date(result.suggestedTime).toLocaleTimeString("en-US", {
-            hour: "numeric", minute: "2-digit", hour12: true,
-          });
-          return {
-            response: `We're fully booked at that time. Would ${suggested} work for you instead?`,
-          };
+          const suggested = new Date(result.suggestedTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          return { response: `We're fully booked at that time. Would ${suggested} work for you instead?` };
         }
 
-        return {
-          response: "I'm sorry, we don't have availability for that time. Would you like to try a different time?",
-        };
+        return { response: "I'm sorry, we don't have availability for that time. Would you like to try a different time?" };
 
       } catch (err) {
         console.error("❌ Booking error:", err.message);
-        return {
-          response: "I'm sorry, something went wrong while making the reservation. Please try again.",
-        };
+        return { response: "I'm sorry, something went wrong. Please try again." };
       } finally {
         processingCalls.delete(callId);
       }
     }
 
-    /**
-     * ================================
-     * PICKUP OR DELIVERY ORDER
-     * ================================
-     */
-    if (
-      orderFlowActive &&
-      orderDraft.items?.length > 0 &&
-      orderDraft.orderType &&
-      orderDraft.orderType !== "dineIn"
-    ) {
-      // For delivery, need address and name
-      if (orderDraft.orderType === "delivery") {
-        if (!orderDraft.deliveryAddress) {
-          return { response: aiResponse || "What is your delivery address?" };
-        }
-        if (!draft.customerName) {
-          return { response: aiResponse || "And what name should I put the order under?" };
-        }
-      }
-
-      // For pickup, just need name
-      if (orderDraft.orderType === "pickup" && !draft.customerName) {
-        return { response: aiResponse || "What name should I put the order under?" };
-      }
-
-      // All info collected — save order
+    // ── PICKUP OR DELIVERY ────────────────────────────────
+    if (pickupComplete || deliveryComplete) {
       const existingOrder = await Order.findOne({ callId });
       if (existingOrder) {
-        return {
-          response: `Your order is already placed under ${draft.customerName || "your name"}. Is there anything else I can help you with?`,
-        };
+        return { response: `Your order is already placed under ${draft.customerName}. Is there anything else I can help you with?` };
       }
 
       const total = orderDraft.items.reduce((sum, item) => {
@@ -652,40 +550,30 @@ async function processLLMMessage(body, req) {
         callId,
         businessId:      agent.businessId,
         agentId:         agent._id,
-        customerName:    draft.customerName || "Guest",
-        customerPhone:   draft.customerPhone || freshCall.callerNumber,
+        customerName:    draft.customerName,
+        customerPhone:   draft.customerPhone || callerPhone,
         deliveryAddress: orderDraft.deliveryAddress || null,
         items: orderDraft.items.map(item => {
           const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
-          return {
-            name:     item.name,
-            quantity: item.quantity || 1,
-            price:    menuItem?.price || 0,
-            extras:   item.extras || [],
-          };
+          return { name: item.name, quantity: item.quantity || 1, price: menuItem?.price || 0, extras: item.extras || [] };
         }),
         orderType: orderDraft.orderType,
         total,
         status: "confirmed",
       });
 
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: {
+          "orderDraft.items":           [],
+          "orderDraft.orderType":       null,
+          "orderDraft.deliveryAddress": null,
+          "orderDraft.status":          "confirmed",
+        },
+      });
+
       console.log("✅ Order saved:", orderDraft.orderType);
 
-
-      await Call.updateOne(
-        { _id: freshCall._id },
-        {
-          $set: {
-            "orderDraft.items":           [],
-            "orderDraft.orderType":       null,
-            "orderDraft.deliveryAddress": null,
-            "orderDraft.status":          "confirmed",
-          },
-        }
-      );
-
       const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
-
       const confirmMsg = orderDraft.orderType === "delivery"
         ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
         : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`;
@@ -693,26 +581,17 @@ async function processLLMMessage(body, req) {
       return { response: confirmMsg };
     }
 
-    // Fallback
+    // Fallback — still collecting info
     return { response: aiResponse || "How can I help you?" };
   }
 
-/**
-   * ================================
-   * GOODBYE DETECTION
-   * ================================
-   */
+  // ── GOODBYE ───────────────────────────────────────────────
   if (/\b(bye|goodbye|thank you|thanks|that's all|nothing else|no thank|bye bye)\b/i.test(latestUserText)) {
     return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
   }
 
-  /**
-   * ================================
-   * GENERAL FALLBACK → AI with agent prompt
-   * ================================
-   */
+  // ── GENERAL FALLBACK ──────────────────────────────────────
   const systemPrompt = buildSystemPrompt(agent);
-
   const conversationHistory = transcript.slice(-6).map(t => ({
     role: t.role === "agent" ? "assistant" : "user",
     content: t.content,
