@@ -568,14 +568,13 @@ async function processLLMMessage(body, req) {
     }
 
     // Allow modification within 5 minutes
-    if (modifyIntent || looksLikeOrderIntent(latestUserText)) {
+    if (modifyIntent || looksLikeOrderIntent(latestUserText) || cancelIntent) {
       const existingOrder = await Order.findOne({ callId });
       if (existingOrder) {
         const minutesSincePlaced = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
         if (minutesSincePlaced > 5) {
           return { response: `I'm sorry, your order was placed ${Math.floor(minutesSincePlaced)} minutes ago and cannot be modified.` };
         }
-        // Load into draft for modification
         orderDraft.items = existingOrder.items;
         orderDraft.orderType = existingOrder.orderType;
         orderDraft.deliveryAddress = existingOrder.deliveryAddress;
@@ -590,8 +589,10 @@ async function processLLMMessage(body, req) {
         });
       }
     } else if (looksLikeBookingIntent(latestUserText)) {
-      // They want to book a table after ordering
-      // fall through to booking flow below
+      // fall through to booking flow
+    } else if (/\b(yes|yeah|sure|okay|ok|yep)\b/i.test(latestUserText)) {
+      // Customer said yes to "is there anything else" — wait for them to say what they want
+      return { response: "Sure, what would you like to change?" };
     } else {
       return { response: "Is there anything else I can help you with?" };
     }
@@ -867,17 +868,19 @@ async function processLLMMessage(body, req) {
       });
 
       if (existingOrder) {
-        // Update existing order
+        const updatedAddress = orderDraft.deliveryAddress || existingOrder.deliveryAddress;
         await Order.updateOne({ _id: existingOrder._id }, {
           $set: {
             items: orderItems,
-            deliveryAddress: orderDraft.deliveryAddress || existingOrder.deliveryAddress,
+            deliveryAddress: updatedAddress,
             orderType: orderDraft.orderType,
             customerName: draft.customerName,
             total,
             status: "confirmed",
           }
         });
+        // Make sure we use the updated address in the confirmation message
+        orderDraft.deliveryAddress = updatedAddress;
         console.log("✅ Order updated:", orderDraft.orderType);
       } else {
         // Create new order
