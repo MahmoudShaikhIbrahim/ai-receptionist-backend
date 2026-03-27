@@ -116,61 +116,15 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
     ? `Available menu:\n${formatMenu(agent.menu)}`
     : "";
 
-  const prompt = `You are ${agent.agentName || "an AI receptionist"} at ${agent.businessName}.
-
-Current booking status:
-- Party size: ${currentDraft.partySize ?? "not collected"}
-- Time: ${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "not collected"}
-- Name: ${currentDraft.customerName ?? "not collected"}
-
-Current order status:
-- Items ordered: ${orderDraft.items?.length > 0 ? orderDraft.items.map(i => `${i.name} x${i.quantity}`).join(", ") : "none"}
-- Order type: ${orderDraft.orderType ?? "not set"}
-- Delivery address: ${orderDraft.deliveryAddress ?? "not collected"}
-
+  const prompt = `Receptionist at ${agent.businessName}.
+State: party=${currentDraft.partySize ?? "?"} time=${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}) : "?"} name=${currentDraft.customerName ?? "?"} items=${orderDraft.items?.length > 0 ? orderDraft.items.map(i=>`${i.name}x${i.quantity}`).join(",") : "none"} type=${orderDraft.orderType ?? "?"} address=${orderDraft.deliveryAddress ?? "?"}
 ${menuText}
-
-Recent conversation:
+Last 4 messages:
 ${recentConvo}
-
-Customer just said: "${text}"
-
-Your job:
-1. Extract any booking info (party size, time, name)
-2. Extract any order info (menu items, quantities, order type, delivery address)
-3. Respond naturally to move the conversation forward
-
-Features enabled:
-- Bookings: ${hasBookings}
-- Orders: ${hasOrders}
-
-Rules:
-- Ask for ONE thing at a time
-- Never ask for phone number or date
-- Keep response short and warm like a real person on the phone
-- For orders, only accept items that exist on the menu
-- Order type can be: dineIn, pickup, or delivery
-- For dineIn orders, also collect party size, time, and name (same as a booking)
-- For delivery orders, collect delivery address and name
-- For pickup orders, collect name only
-- If all required info is collected, return null for response
-
-Respond ONLY with this JSON:
-{
-  "extracted": {
-    "partySize": <number or null>,
-    "time": "<HH:MM or null>",
-    "name": "<string or null>"
-  },
-  "orderExtracted": {
-    "items": [{ "name": "<item name>", "quantity": <number>, "extras": ["<extra name>"] }],
-    "orderType": "<dineIn|pickup|delivery|null>",
-    "deliveryAddress": "<address or null>"
-  },
-  "response": "<your natural reply or null if everything collected>"
-}
-
-Only JSON. No markdown. No explanation.`;
+Customer: "${text}"
+Rules: short warm replies. Never ask phone/date. pickup/delivery=NO partySize/time. delivery=ask items FIRST then address then name. pickup=ask items then name. dineIn=items+partySize+time+name. Never suggest ordering unless customer asks. Capture address exactly as spoken.
+Reply JSON only:
+{"extracted":{"partySize":null,"time":null,"name":null},"orderExtracted":{"items":[],"orderType":null,"deliveryAddress":null},"response":"reply or null"}`;
 
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -352,6 +306,14 @@ async function processLLMMessage(body, req) {
    * ACTIVE FLOW
    */
   if (bookingFlowActive || orderFlowActive) {
+
+    // If order already confirmed, don't re-enter order flow
+    if (orderDraft.status === "confirmed") {
+      if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
+        return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
+      }
+      return { response: "Is there anything else I can help you with?" };
+    }
 
     // Check goodbye FIRST before calling OpenAI
     if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
