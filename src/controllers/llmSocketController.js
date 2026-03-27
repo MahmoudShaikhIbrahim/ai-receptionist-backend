@@ -237,7 +237,7 @@ async function processLLMMessage(body, req) {
   if (interactionType === "ping_pong") return null;
   if (interactionType !== "response_required") return null;
 
-  /**
+ /**
    * CALL ID
    */
   let callId =
@@ -257,7 +257,17 @@ async function processLLMMessage(body, req) {
     return { response: "Sorry, something went wrong." };
   }
 
- 
+  /**
+   * LOAD CALL — single query
+   */
+  const freshCall = await Call.findOne({
+    $or: [{ callId }, { call_id: callId }],
+  }).lean();
+
+  if (!freshCall) {
+    console.warn("⚠️ Call not found:", callId);
+    return { response: "Sorry, something went wrong." };
+  }
 
   /**
    * LOAD AGENT
@@ -284,7 +294,6 @@ async function processLLMMessage(body, req) {
       { _id: freshCall._id },
       { $set: { callerNumber: phoneFromBody } }
     );
-    freshCall.callerNumber = phoneFromBody;
   }
 
   /**
@@ -296,18 +305,9 @@ async function processLLMMessage(body, req) {
       : "";
 
   const transcript = body.transcript ?? [];
-
   /**
    * DRAFT STATE
    */
-  const freshCall = await Call.findOne({
-    $or: [{ callId }, { call_id: callId }],
-  }).lean();
-
-  if (!freshCall) {
-    console.warn("⚠️ Call not found:", callId);
-    return { response: "Sorry, something went wrong." };
-  }
 
   let draft = {
     partySize:      freshCall.bookingDraft?.partySize      ?? null,
