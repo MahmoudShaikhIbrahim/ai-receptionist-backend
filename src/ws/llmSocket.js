@@ -51,7 +51,7 @@ function handleLLMWebSocket(ws, req) {
   // so Retell's first response_required doesn't cause a second greeting
   safeSend(ws, {
     response_id: 0,
-    content: "Hello! Welcome to our restaurant. How can I help you today?",
+    content: "Welcome to Al Bait Al Shami, How can I help you?",
     content_complete: true,
     end_call: false,
   });

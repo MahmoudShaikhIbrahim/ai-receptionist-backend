@@ -7,6 +7,7 @@ const Order = require("../models/Order");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
+const processedResponseIds = new Set();
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
 function formatMenu(menu) {
@@ -210,6 +211,19 @@ async function processLLMMessage(body, req) {
   const interactionType = body.interaction_type || body.type;
   if (interactionType === "ping_pong") return null;
   if (interactionType !== "response_required") return null;
+
+  const responseId = body.response_id;
+  if (responseId !== undefined && responseId !== null) {
+    if (processedResponseIds.has(responseId)) {
+      console.log(`⏭ Skipping duplicate response_id: ${responseId}`);
+      return null;
+    }
+    processedResponseIds.add(responseId);
+    if (processedResponseIds.size > 100) {
+      const first = processedResponseIds.values().next().value;
+      processedResponseIds.delete(first);
+    }
+  }
 
   // ── CALL ID ──────────────────────────────────────────────
   let callId =
@@ -575,18 +589,27 @@ async function processLLMMessage(body, req) {
         if (minutesSincePlaced > 5) {
           return { response: `I'm sorry, your order was placed ${Math.floor(minutesSincePlaced)} minutes ago and cannot be modified.` };
         }
+
+        // If customer specifically mentions address, clear it so they can provide a new one
+        const mentionsAddress = /\b(address|location|deliver|where)\b/i.test(latestUserText);
+
         orderDraft.items = existingOrder.items;
         orderDraft.orderType = existingOrder.orderType;
-        orderDraft.deliveryAddress = existingOrder.deliveryAddress;
+        orderDraft.deliveryAddress = mentionsAddress ? null : existingOrder.deliveryAddress;
         orderDraft.status = null;
+
         await Call.updateOne({ _id: freshCall._id }, {
           $set: {
             "orderDraft.items": existingOrder.items,
             "orderDraft.orderType": existingOrder.orderType,
-            "orderDraft.deliveryAddress": existingOrder.deliveryAddress,
+            "orderDraft.deliveryAddress": mentionsAddress ? null : existingOrder.deliveryAddress,
             "orderDraft.status": null,
           }
         });
+
+        if (mentionsAddress) {
+          return { response: "Sure! What is the new delivery address?" };
+        }
       }
     } else if (looksLikeBookingIntent(latestUserText)) {
       // fall through to booking flow
@@ -916,15 +939,32 @@ async function processLLMMessage(body, req) {
       return { response: confirmMsg };
     }
 
+    if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress) {
+      return { response: "What is the delivery address?" };
+    }
+    if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && orderDraft.deliveryAddress && !draft.customerName) {
+      return { response: "What name should I put the order under?" };
+    }
+    if (orderDraft.orderType === "pickup" && orderDraft.items?.length > 0 && !draft.customerName) {
+      return { response: "What name should I put the order under?" };
+    }
     return { response: aiResponse || "How can I help you?" };
   }
 
   // ── GOODBYE ───────────────────────────────────────────────
   if (/\b(bye|goodbye|thank you|thanks|that's all|nothing else|no thank|bye bye)\b/i.test(latestUserText)) {
-    return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
+    return { response: "Have a wonderful day, Goodbye!", end_call: true };
   }
 
   // ── GENERAL FALLBACK ──────────────────────────────────────
+ // ── GENERAL FALLBACK ──────────────────────────────────────
+
+  // If customer just said hello/hi and agent already greeted, don't greet again
+  const isJustGreeting = /^(hi|hello|hey|good morning|good evening|good afternoon|howdy|greetings)[\s\?\!\.]*$/i.test(latestUserText.trim());
+  if (isJustGreeting) {
+    return { response: "How can I help you?" };
+  }
+
   const systemPrompt = buildSystemPrompt(agent);
   const conversationHistory = transcript.slice(-6).map(t => ({
     role: t.role === "agent" ? "assistant" : "user",
@@ -937,7 +977,6 @@ async function processLLMMessage(body, req) {
     { role: "user", content: latestUserText || "Hello" },
   ]);
 
-  return { response: aiReply || "How can I help you today?" };
+  return { response: aiReply || "How can I help you?" };
 }
-
 module.exports = { processLLMMessage };
