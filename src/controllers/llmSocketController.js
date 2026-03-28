@@ -302,6 +302,14 @@ async function processLLMMessage(body, req) {
     deliveryAddress: freshCall.orderDraft?.deliveryAddress ?? null,
   };
 
+  // If customer wants to book a table but has no food items, reset order draft
+  if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserText) && orderDraft.items?.length === 0) {
+    orderDraft.orderType = null;
+    await Call.updateOne({ _id: freshCall._id }, {
+      $set: { "orderDraft.orderType": null }
+    });
+  }
+
   // ── RETURNING CALLER CHECK ───────────────────────────────
   // Only run once per call (when draft is empty and no name yet)
   let returningContext = null;
@@ -581,23 +589,39 @@ async function processLLMMessage(body, req) {
       return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
     }
 
-    // Allow modification within 5 minutes
-    if (modifyIntent || looksLikeOrderIntent(latestUserText) || cancelIntent) {
-      const existingOrder = await Order.findOne({ callId });
+    // New order request — reset draft completely
+    if (looksLikeOrderIntent(latestUserText) && !modifyIntent && !cancelIntent) {
+      orderDraft = { items: [], orderType: null, status: null, deliveryAddress: null };
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: {
+          "orderDraft.items": [],
+          "orderDraft.orderType": null,
+          "orderDraft.status": null,
+          "orderDraft.deliveryAddress": null,
+        }
+      });
+      // Fall through to active flow
+    }
+    // New booking request — fall through to booking flow
+    else if (looksLikeBookingIntent(latestUserText)) {
+      // fall through
+    }
+    // Modification within 5 minutes
+    else if (modifyIntent || cancelIntent) {
+      const existingOrder = await Order.findOne({
+        callId,
+        status: { $in: ["confirmed", "preparing"] }
+      }).sort({ createdAt: -1 });
       if (existingOrder) {
         const minutesSincePlaced = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
         if (minutesSincePlaced > 5) {
           return { response: `I'm sorry, your order was placed ${Math.floor(minutesSincePlaced)} minutes ago and cannot be modified.` };
         }
-
-        // If customer specifically mentions address, clear it so they can provide a new one
         const mentionsAddress = /\b(address|location|deliver|where)\b/i.test(latestUserText);
-
         orderDraft.items = existingOrder.items;
         orderDraft.orderType = existingOrder.orderType;
         orderDraft.deliveryAddress = mentionsAddress ? null : existingOrder.deliveryAddress;
         orderDraft.status = null;
-
         await Call.updateOne({ _id: freshCall._id }, {
           $set: {
             "orderDraft.items": existingOrder.items,
@@ -606,16 +630,10 @@ async function processLLMMessage(body, req) {
             "orderDraft.status": null,
           }
         });
-
         if (mentionsAddress) {
           return { response: "Sure! What is the new delivery address?" };
         }
       }
-    } else if (looksLikeBookingIntent(latestUserText)) {
-      // fall through to booking flow
-    } else if (/\b(yes|yeah|sure|okay|ok|yep)\b/i.test(latestUserText)) {
-      // Customer said yes to "is there anything else" — wait for them to say what they want
-      return { response: "Sure, what would you like to change?" };
     } else {
       return { response: "Is there anything else I can help you with?" };
     }
@@ -729,7 +747,9 @@ async function processLLMMessage(body, req) {
       processingCalls.add(callId);
 
       try {
-        const existingOrder = await Order.findOne({ callId });
+        const existingOrder = confirmedOrderId
+          ? await Order.findById(confirmedOrderId)
+          : null;
 
         const total = orderDraft.items.reduce((sum, item) => {
           const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
@@ -872,13 +892,11 @@ async function processLLMMessage(body, req) {
 
     // ── PICKUP OR DELIVERY ────────────────────────────────
     if (pickupComplete || deliveryComplete) {
-      // Check for existing order to update (same call or returning caller)
-      const existingOrder = await Order.findOne({
-        $or: [
-          { callId },
-          ...(confirmedOrderId ? [{ _id: confirmedOrderId }] : []),
-        ]
-      });
+      // Only update if there's a confirmed order ID from returning caller flow
+      // For same-call orders, always create new
+      const existingOrder = confirmedOrderId
+        ? await Order.findById(confirmedOrderId)
+        : null;
 
       const total = orderDraft.items.reduce((sum, item) => {
         const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
