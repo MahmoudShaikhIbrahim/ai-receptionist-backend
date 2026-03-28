@@ -7,7 +7,6 @@ const Order = require("../models/Order");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
-const processedResponseIds = new Set();
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
 function formatMenu(menu) {
@@ -123,7 +122,7 @@ STRICT RULES:
 - Never ask for phone number or date.
 - Keep responses short and warm.
 - If customer corrects their name, use the corrected name.
-- For delivery address: extract ONLY the meaningful location info. Remove filler words like "uh", "um", "it's in", "the building name is", "located at". Format cleanly as: [Building/Landmark], [Street], [Notes].
+- For delivery address: extract ONLY the meaningful location info. Remove filler words like "uh", "um", "it's in", "the building name is", "located at". Only include parts the customer actually mentioned. Never include "null" in the address.
 - If customer wants to CANCEL booking or order, set intent to "cancel".
 - If customer wants to MODIFY booking (time/people) or order (quantity/items/address/type), set intent to "modify".
 - If all required info collected for new order/booking, return null for response.
@@ -212,18 +211,6 @@ async function processLLMMessage(body, req) {
   if (interactionType === "ping_pong") return null;
   if (interactionType !== "response_required") return null;
 
-  const responseId = body.response_id;
-  if (responseId !== undefined && responseId !== null) {
-    if (processedResponseIds.has(responseId)) {
-      console.log(`⏭ Skipping duplicate response_id: ${responseId}`);
-      return null;
-    }
-    processedResponseIds.add(responseId);
-    if (processedResponseIds.size > 100) {
-      const first = processedResponseIds.values().next().value;
-      processedResponseIds.delete(first);
-    }
-  }
 
   // ── CALL ID ──────────────────────────────────────────────
   let callId =
@@ -303,10 +290,18 @@ async function processLLMMessage(body, req) {
   };
 
   // If customer wants to book a table but has no food items, reset order draft
-  if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserText) && orderDraft.items?.length === 0) {
+if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserText) && orderDraft.items?.length === 0) {
     orderDraft.orderType = null;
+    orderDraft.status = null;
+    draft.requestedStart = null;
+    draft.partySize = null;
     await Call.updateOne({ _id: freshCall._id }, {
-      $set: { "orderDraft.orderType": null }
+      $set: {
+        "orderDraft.orderType":        null,
+        "orderDraft.status":           null,
+        "bookingDraft.requestedStart": null,
+        "bookingDraft.partySize":      null,
+      }
     });
   }
 
@@ -717,8 +712,12 @@ async function processLLMMessage(body, req) {
 
     // ── COMPLETION CHECKS ─────────────────────────────────
     const bookingComplete =
-      bookingFlowActive && !orderFlowActive &&
-      draft.partySize && draft.requestedStart && draft.customerName;
+      bookingFlowActive &&
+      orderDraft.items?.length === 0 &&
+      !orderDraft.orderType &&
+      draft.partySize &&
+      draft.requestedStart &&
+      draft.customerName;
 
     const dineInComplete =
       orderDraft.orderType === "dineIn" &&
