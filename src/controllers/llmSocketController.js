@@ -115,6 +115,8 @@ Customer just said: "${text}"
 
 STRICT RULES:
 - NEVER assume orderType. If customer just says "I want to order" ask "Would you like delivery, pickup, or dine-in?"
+- NEVER set orderType to dineIn just because customer wants to book a table. orderType dineIn is ONLY for when customer explicitly orders food to eat inside the restaurant. Booking a table is NOT an order.
+- If customer says "book a table" or "reserve a table" with no food items, leave orderType as null.
 - For pickup: collect items first, then name. NEVER ask address or party size.
 - For delivery: collect items first, then address, then name. NEVER ask party size.
 - For dineIn: collect items, how many people, time, and name.
@@ -290,17 +292,21 @@ async function processLLMMessage(body, req) {
   };
 
   // If customer wants to book a table but has no food items, reset order draft
-if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserText) && orderDraft.items?.length === 0) {
+if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserText)) {
     orderDraft.orderType = null;
     orderDraft.status = null;
-    draft.requestedStart = null;
-    draft.partySize = null;
+    if (orderDraft.items?.length === 0) {
+      draft.requestedStart = null;
+      draft.partySize = null;
+    }
     await Call.updateOne({ _id: freshCall._id }, {
       $set: {
         "orderDraft.orderType":        null,
         "orderDraft.status":           null,
-        "bookingDraft.requestedStart": null,
-        "bookingDraft.partySize":      null,
+        ...(orderDraft.items?.length === 0 ? {
+          "bookingDraft.requestedStart": null,
+          "bookingDraft.partySize":      null,
+        } : {}),
       }
     });
   }
