@@ -44,14 +44,14 @@ function safeSend(ws, payload) {
 
 function handleLLMWebSocket(ws, req) {
   console.log("🔌 Retell WebSocket connected");
+  const callStartTime = Date.now();
 
   const processedResponseIds = new Set();
 
   // Send initial greeting and mark response_id 0 as handled
-  // so Retell's first response_required doesn't cause a second greeting
   safeSend(ws, {
     response_id: 0,
-    content: "Welcome to Al Bait Al Shami, How can I help you?",
+    content: "Hello! Welcome to Al Bait Al Shami. How can I help you today?",
     content_complete: true,
     end_call: false,
   });
@@ -77,6 +77,21 @@ function handleLLMWebSocket(ws, req) {
         return;
       }
       processedResponseIds.add(responseId);
+
+      // Skip response_id 1 if it comes within 2 seconds of call start (noise)
+      if (responseId === 1) {
+        const callAge = Date.now() - callStartTime;
+        if (callAge < 2000) {
+          console.log("⏭ Skipping early response_id 1 (noise at call start)");
+          safeSend(ws, {
+            response_id: responseId,
+            content: "",
+            content_complete: true,
+            end_call: false,
+          });
+          return;
+        }
+      }
 
       const latestUserText = extractLatestUserText(data);
       console.log("🗣 User:", latestUserText || "(none)");
