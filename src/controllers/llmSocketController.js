@@ -7,6 +7,30 @@ const Order = require("../models/Order");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
+// ─── PER-CALL PROCESSING LOCK ─────────────────────────────────────────────────
+// Prevents duplicate processing when Retell sends multiple rapid requests
+const activeCallProcessing = new Map(); // callId -> timestamp
+
+function acquireLock(callId) {
+  const now = Date.now();
+  const last = activeCallProcessing.get(callId);
+  if (last && now - last < 3000) return false; // locked for 3 seconds
+  activeCallProcessing.set(callId, now);
+  return true;
+}
+
+function releaseLock(callId) {
+  activeCallProcessing.delete(callId);
+}
+
+// Clean up old locks every 30 seconds
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, ts] of activeCallProcessing.entries()) {
+    if (now - ts > 10000) activeCallProcessing.delete(id);
+  }
+}, 30000);
+
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
 function formatMenu(menu) {
@@ -73,7 +97,7 @@ Rules:
 - Never ask for the customer's phone number
 - Never mention dates for reservations, only times
 - NEVER suggest ordering or ask if customer wants to order after a booking is confirmed
-- NEVER ask party size — instead say "for how many people?"
+- NEVER ask "party size" — say "how many people" instead
 - If asked about something not on the menu, politely say it is not available
 - Always be warm and welcoming`;
 }
@@ -95,9 +119,7 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
     ? `Available menu:\n${formatMenu(agent.menu)}`
     : "";
 
-  const returningInfo = returningContext
-    ? `Returning customer context: ${returningContext}`
-    : "";
+  const returningInfo = returningContext ? `Returning customer context: ${returningContext}` : "";
 
   const prompt = `You are a receptionist at ${agent.businessName}.
 
@@ -115,7 +137,7 @@ Customer just said: "${text}"
 
 STRICT RULES:
 - NEVER assume orderType. If customer just says "I want to order" ask "Would you like delivery, pickup, or dine-in?"
-- NEVER set orderType to dineIn just because customer wants to book a table. orderType dineIn is ONLY for when customer explicitly orders food to eat inside the restaurant. Booking a table is NOT an order.
+- NEVER set orderType to dineIn just because customer wants to book a table. orderType dineIn is ONLY when customer explicitly orders food to eat inside. Booking a table is NOT an order.
 - If customer says "book a table" or "reserve a table" with no food items, leave orderType as null.
 - For pickup: collect items first, then name. NEVER ask address or party size.
 - For delivery: collect items first, then address, then name. NEVER ask party size.
@@ -124,23 +146,15 @@ STRICT RULES:
 - Never ask for phone number or date.
 - Keep responses short and warm.
 - If customer corrects their name, use the corrected name.
-- For delivery address: extract ONLY the meaningful location info. Remove filler words like "uh", "um", "it's in", "the building name is", "located at". Only include parts the customer actually mentioned. Never include "null" in the address.
+- For delivery address: extract ONLY meaningful location info. Remove filler words like "uh", "um", "it's in", "the building name is". Only include parts customer actually mentioned. Never include "null" in address.
 - If customer wants to CANCEL booking or order, set intent to "cancel".
-- If customer wants to MODIFY booking (time/people) or order (quantity/items/address/type), set intent to "modify".
-- If all required info collected for new order/booking, return null for response.
+- If customer wants to MODIFY booking or order, set intent to "modify".
+- If all required info collected, return null for response.
 
 Respond ONLY with valid JSON (no markdown):
 {
-  "extracted": {
-    "partySize": <number or null>,
-    "time": "<HH:MM 24hr or null>",
-    "name": "<string or null>"
-  },
-  "orderExtracted": {
-    "items": [{"name": "<exact menu item name>", "quantity": <number>, "extras": []}],
-    "orderType": "<dineIn|pickup|delivery|null>",
-    "deliveryAddress": "<cleaned address or null>"
-  },
+  "extracted": {"partySize": <number or null>, "time": "<HH:MM 24hr or null>", "name": "<string or null>"},
+  "orderExtracted": {"items": [{"name": "<exact menu item name>", "quantity": <number>, "extras": []}], "orderType": "<dineIn|pickup|delivery|null>", "deliveryAddress": "<cleaned address or null>"},
   "intent": "<cancel|modify|new|null>",
   "response": "<your reply or null>"
 }`;
@@ -200,8 +214,7 @@ function looksLikeModifyIntent(text) {
   return /\b(change|modify|update|edit|make it|instead|switch|different|wrong|correct|fix)\b/i.test(text);
 }
 
-// ─── LOCK ─────────────────────────────────────────────────────────────────────
-
+// ─── BOOKING ENGINE LOCK ──────────────────────────────────────────────────────
 const processingCalls = new Set();
 
 // ─── MAIN ────────────────────────────────────────────────────────────────────
@@ -213,66 +226,54 @@ async function processLLMMessage(body, req) {
   if (interactionType === "ping_pong") return null;
   if (interactionType !== "response_required") return null;
 
-
   // ── CALL ID ──────────────────────────────────────────────
-  let callId =
-    body.call_id ||
-    body.callId ||
-    body?.metadata?.call_id ||
-    null;
-
+  let callId = body.call_id || body.callId || body?.metadata?.call_id || null;
   if (!callId && req?.url) {
     const parts = req.url.split("/");
     const last = parts[parts.length - 1];
     if (last?.startsWith("call_")) callId = last;
   }
+  if (!callId) return { response: "Sorry, something went wrong." };
 
-  if (!callId) {
-    console.warn("⚠️ No callId");
-    return { response: "Sorry, something went wrong." };
+  // ── PER-CALL LOCK — prevent duplicate processing ─────────
+  if (!acquireLock(callId)) {
+    console.log(`⏭ Skipping duplicate request for call: ${callId}`);
+    return null;
   }
+
+  try {
+    return await _processMessage(body, req, callId);
+  } finally {
+    releaseLock(callId);
+  }
+}
+
+async function _processMessage(body, req, callId) {
 
   // ── LOAD CALL ────────────────────────────────────────────
   const freshCall = await Call.findOne({
     $or: [{ callId }, { call_id: callId }],
   }).lean();
-
-  if (!freshCall) {
-    console.warn("⚠️ Call not found:", callId);
-    return { response: "Sorry, something went wrong." };
-  }
+  if (!freshCall) return { response: "Sorry, something went wrong." };
 
   // ── LOAD AGENT ───────────────────────────────────────────
   const agent = await Agent.findById(freshCall.agentId).lean();
-  if (!agent) {
-    console.warn("⚠️ Agent not found");
-    return { response: "Sorry, something went wrong." };
-  }
+  if (!agent) return { response: "Sorry, something went wrong." };
 
   // ── PHONE NUMBER ─────────────────────────────────────────
   const phoneFromBody =
-    body?.call?.from_number ||
-    body?.call?.caller_id ||
-    body?.call?.from ||
-    body?.call?.customer_number ||
-    body?.from_number ||
-    null;
+    body?.call?.from_number || body?.call?.caller_id ||
+    body?.call?.from || body?.call?.customer_number || body?.from_number || null;
 
   const callerPhone = freshCall.callerNumber || phoneFromBody || null;
 
   if (!freshCall.callerNumber && phoneFromBody) {
-    await Call.updateOne(
-      { _id: freshCall._id },
-      { $set: { callerNumber: phoneFromBody } }
-    );
+    await Call.updateOne({ _id: freshCall._id }, { $set: { callerNumber: phoneFromBody } });
   }
 
   // ── USER TEXT ────────────────────────────────────────────
-  const latestUserText =
-    typeof body.latest_user_text === "string"
-      ? body.latest_user_text.trim()
-      : "";
-
+  const latestUserText = typeof body.latest_user_text === "string"
+    ? body.latest_user_text.trim() : "";
   const transcript = body.transcript ?? [];
   console.log(`🗣 User: ${latestUserText}`);
 
@@ -291,8 +292,8 @@ async function processLLMMessage(body, req) {
     deliveryAddress: freshCall.orderDraft?.deliveryAddress ?? null,
   };
 
-  // If customer wants to book a table but has no food items, reset order draft
-if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserText)) {
+  // ── BOOKING INTENT RESET ─────────────────────────────────
+  if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserText)) {
     orderDraft.orderType = null;
     orderDraft.status = null;
     if (orderDraft.items?.length === 0) {
@@ -301,54 +302,39 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
     }
     await Call.updateOne({ _id: freshCall._id }, {
       $set: {
-        "orderDraft.orderType":        null,
-        "orderDraft.status":           null,
+        "orderDraft.orderType": null,
+        "orderDraft.status": null,
         ...(orderDraft.items?.length === 0 ? {
           "bookingDraft.requestedStart": null,
-          "bookingDraft.partySize":      null,
+          "bookingDraft.partySize": null,
         } : {}),
       }
     });
   }
 
-  // ── RETURNING CALLER CHECK ───────────────────────────────
-  // Only run once per call (when draft is empty and no name yet)
+  // ── RETURNING CALLER ─────────────────────────────────────
   let returningContext = null;
   let returningBooking = null;
   let returningOrder = null;
   let awaitingReturnConfirmation = freshCall.meta?.awaitingReturnConfirmation ?? false;
   let returnConfirmed = freshCall.meta?.returnConfirmed ?? false;
 
-  // ── RETURNING CALLER — only triggered when customer mentions modify/cancel ──
   const mentionsChange = /\b(cancel|change|modify|update|edit|fix|correct|i called|earlier|last time|my order|my booking|placed an order|made a booking)\b/i.test(latestUserText);
 
   if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed) {
     const previousCall = await Call.findOne({
       _id: { $ne: freshCall._id },
-      $or: [
-        { callerNumber: callerPhone },
-        { "bookingDraft.customerPhone": callerPhone },
-      ],
+      $or: [{ callerNumber: callerPhone }, { "bookingDraft.customerPhone": callerPhone }],
       agentId: freshCall.agentId,
     }).sort({ createdAt: -1 }).lean();
 
     if (previousCall) {
-      const prevBooking = await Booking.findOne({
-        callId: previousCall.callId,
-        status: { $in: ["confirmed", "seated"] },
-      }).lean();
-
-      const prevOrder = await Order.findOne({
-        callId: previousCall.callId,
-        status: { $in: ["confirmed", "preparing", "ready"] },
-      }).lean();
+      const prevBooking = await Booking.findOne({ callId: previousCall.callId, status: { $in: ["confirmed","seated"] } }).lean();
+      const prevOrder = await Order.findOne({ callId: previousCall.callId, status: { $in: ["confirmed","preparing","ready"] } }).lean();
 
       if (prevBooking || prevOrder) {
         const name = prevBooking?.customerName || prevOrder?.customerName;
         if (name) {
-          returningBooking = prevBooking;
-          returningOrder = prevOrder;
-
           if (prevBooking) {
             const timeStr = new Date(prevBooking.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
             returningContext = `Booking for ${prevBooking.partySize} people at ${timeStr} under ${name}`;
@@ -357,28 +343,23 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
             returningContext = `${prevOrder.orderType} order: ${itemsSummary} under ${name}`;
           }
 
-          await Call.updateOne(
-            { _id: freshCall._id },
-            {
-              $set: {
-                "meta.awaitingReturnConfirmation": true,
-                "meta.returningName": name,
-                "meta.returningBookingId": prevBooking?._id?.toString() ?? null,
-                "meta.returningOrderId": prevOrder?._id?.toString() ?? null,
-              }
+          await Call.updateOne({ _id: freshCall._id }, {
+            $set: {
+              "meta.awaitingReturnConfirmation": true,
+              "meta.returningName": name,
+              "meta.returningBookingId": prevBooking?._id?.toString() ?? null,
+              "meta.returningOrderId": prevOrder?._id?.toString() ?? null,
             }
-          );
+          });
 
           console.log(`📞 Returning caller detected: ${name}`);
           return { response: `${name}? Is that right?` };
         }
       }
     }
-
-    // No previous record found — treat as new call
   }
 
-  // ── HANDLE RETURNING CALLER CONFIRMATION ─────────────────
+  // ── RETURNING CALLER CONFIRMATION ────────────────────────
   if (awaitingReturnConfirmation && !returnConfirmed) {
     const isYes = /\b(yes|yeah|yep|correct|that's me|right|yup|sure|exactly|affirmative)\b/i.test(latestUserText);
     const isNo = /\b(no|nope|wrong|not me|different|incorrect)\b/i.test(latestUserText);
@@ -388,253 +369,149 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
       const returningBookingId = freshCall.meta?.returningBookingId;
       const returningOrderId = freshCall.meta?.returningOrderId;
 
-      // Set name in draft
       draft.customerName = returningName;
-      await Call.updateOne(
-        { _id: freshCall._id },
-        {
-          $set: {
-            "meta.returnConfirmed": true,
-            "meta.awaitingReturnConfirmation": false,
-            "bookingDraft.customerName": returningName,
-          }
-        }
-      );
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: { "meta.returnConfirmed": true, "meta.awaitingReturnConfirmation": false, "bookingDraft.customerName": returningName }
+      });
 
-      // Load the returning booking/order for context
       let contextMsg = "";
       if (returningBookingId) {
-        returningBooking = await Booking.findById(returningBookingId).lean();
-        if (returningBooking) {
-          const timeStr = new Date(returningBooking.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
-          contextMsg = `I have your table booking for ${returningBooking.partySize} at ${timeStr}.`;
+        const rb = await Booking.findById(returningBookingId).lean();
+        if (rb) {
+          const timeStr = new Date(rb.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          contextMsg = `I have your table booking for ${rb.partySize} at ${timeStr}.`;
         }
       }
       if (!contextMsg && returningOrderId) {
-        returningOrder = await Order.findById(returningOrderId).lean();
-        if (returningOrder) {
-          const itemsSummary = returningOrder.items.map(i => `${i.name} x${i.quantity}`).join(", ");
-          contextMsg = `I have your ${returningOrder.orderType} order for ${itemsSummary}.`;
+        const ro = await Order.findById(returningOrderId).lean();
+        if (ro) {
+          const itemsSummary = ro.items.map(i => `${i.name} x${i.quantity}`).join(", ");
+          contextMsg = `I have your ${ro.orderType} order for ${itemsSummary}.`;
         }
       }
-
       return { response: `Great! ${contextMsg} How can I help you?` };
     }
 
     if (isNo) {
-      await Call.updateOne(
-        { _id: freshCall._id },
-        {
-          $set: {
-            "meta.awaitingReturnConfirmation": false,
-            "meta.returnConfirmed": false,
-          }
-        }
-      );
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: { "meta.awaitingReturnConfirmation": false, "meta.returnConfirmed": false }
+      });
       return { response: "I'm sorry about that! How can I help you today?" };
     }
 
-    // Not yes/no yet — re-ask
     return { response: `Sorry, I didn't catch that. Is this ${freshCall.meta?.returningName}?` };
   }
 
-  // ── LOAD RETURNING IDs IF CONFIRMED ──────────────────────
+  // ── CONFIRMED IDs ─────────────────────────────────────────
   const confirmedBookingId = freshCall.meta?.returningBookingId ?? null;
   const confirmedOrderId = freshCall.meta?.returningOrderId ?? null;
   returnConfirmed = freshCall.meta?.returnConfirmed ?? false;
 
   // ── INTENT DETECTION ─────────────────────────────────────
   const recentTranscriptText = transcript.slice(-4).map(t => t.content).join(" ");
-
   const cancelIntent = looksLikeCancelIntent(latestUserText);
   const modifyIntent = looksLikeModifyIntent(latestUserText);
 
   const bookingFlowActive =
-    !!draft.partySize ||
-    !!draft.requestedStart ||
+    !!draft.partySize || !!draft.requestedStart ||
     (!returnConfirmed && !!draft.customerName) ||
-    looksLikeBookingIntent(latestUserText) ||
-    looksLikeBookingIntent(recentTranscriptText);
+    looksLikeBookingIntent(latestUserText) || looksLikeBookingIntent(recentTranscriptText);
 
   const orderFlowActive =
     agent.features?.orders === true && (
-      !!orderDraft.items?.length ||
-      !!orderDraft.orderType ||
-      looksLikeOrderIntent(latestUserText) ||
-      looksLikeOrderIntent(recentTranscriptText)
+      !!orderDraft.items?.length || !!orderDraft.orderType ||
+      looksLikeOrderIntent(latestUserText) || looksLikeOrderIntent(recentTranscriptText)
     );
 
-  // ── CANCEL FLOW ───────────────────────────────────────────
+  // ── CANCEL — RETURNING CALLER ─────────────────────────────
   if (cancelIntent && returnConfirmed) {
-    const bookingIdToCancel = confirmedBookingId;
-    const orderIdToCancel = confirmedOrderId;
-
-    // Determine what to cancel based on context
     const wantsToCancel = latestUserText.toLowerCase();
 
-    // Cancel booking
-    if (bookingIdToCancel && (wantsToCancel.includes("book") || wantsToCancel.includes("reserv") || wantsToCancel.includes("table") || !wantsToCancel.includes("order"))) {
-      const booking = await Booking.findById(bookingIdToCancel);
+    if (confirmedBookingId && (wantsToCancel.includes("book") || wantsToCancel.includes("reserv") || wantsToCancel.includes("table") || !wantsToCancel.includes("order"))) {
+      const booking = await Booking.findById(confirmedBookingId);
       if (booking) {
-        await Booking.updateOne({ _id: bookingIdToCancel }, { $set: { status: "cancelled" } });
-        await Call.updateOne({ _id: freshCall._id }, {
-          $set: {
-            "meta.returningBookingId": null,
-            "bookingDraft.partySize": null,
-            "bookingDraft.requestedStart": null,
-            "bookingDraft.customerName": null,
-          }
-        });
-        console.log("✅ Booking cancelled:", bookingIdToCancel);
+        await Booking.updateOne({ _id: confirmedBookingId }, { $set: { status: "cancelled" } });
+        await Call.updateOne({ _id: freshCall._id }, { $set: { "meta.returningBookingId": null, "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null } });
         return { response: `Done! Your booking has been cancelled. Is there anything else I can help you with?` };
       }
     }
 
-    // Cancel order
-    if (orderIdToCancel) {
-      const order = await Order.findById(orderIdToCancel);
+    if (confirmedOrderId) {
+      const order = await Order.findById(confirmedOrderId);
       if (order) {
-        const minutesSincePlaced = (Date.now() - new Date(order.createdAt).getTime()) / 60000;
-        if (minutesSincePlaced > 5) {
-          return { response: `I'm sorry, your order was placed ${Math.floor(minutesSincePlaced)} minutes ago and is likely already being prepared. It cannot be cancelled.` };
-        }
-        await Order.updateOne({ _id: orderIdToCancel }, { $set: { status: "cancelled" } });
-        await Call.updateOne({ _id: freshCall._id }, {
-          $set: {
-            "meta.returningOrderId": null,
-            "orderDraft.items": [],
-            "orderDraft.orderType": null,
-            "orderDraft.status": null,
-            "orderDraft.deliveryAddress": null,
-          }
-        });
-        console.log("✅ Order cancelled:", orderIdToCancel);
+        const mins = (Date.now() - new Date(order.createdAt).getTime()) / 60000;
+        if (mins > 5) return { response: `I'm sorry, your order was placed ${Math.floor(mins)} minutes ago and cannot be cancelled.` };
+        await Order.updateOne({ _id: confirmedOrderId }, { $set: { status: "cancelled" } });
+        await Call.updateOne({ _id: freshCall._id }, { $set: { "meta.returningOrderId": null, "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.status": null, "orderDraft.deliveryAddress": null } });
         return { response: `Done! Your order has been cancelled. Is there anything else I can help you with?` };
       }
     }
   }
 
-  // Also handle cancel during same call (order just placed this call)
+  // ── CANCEL — SAME CALL ────────────────────────────────────
   if (cancelIntent && orderDraft.status === "confirmed") {
-    const existingOrder = await Order.findOne({ callId });
+    const existingOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 });
     if (existingOrder) {
-      const minutesSincePlaced = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
-      if (minutesSincePlaced > 5) {
-        return { response: `I'm sorry, your order was placed ${Math.floor(minutesSincePlaced)} minutes ago and is likely already being prepared. It cannot be cancelled.` };
-      }
+      const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
+      if (mins > 5) return { response: `I'm sorry, your order was placed ${Math.floor(mins)} minutes ago and cannot be cancelled.` };
       await Order.updateOne({ _id: existingOrder._id }, { $set: { status: "cancelled" } });
-      await Call.updateOne({ _id: freshCall._id }, {
-        $set: {
-          "orderDraft.items": [],
-          "orderDraft.orderType": null,
-          "orderDraft.status": "cancelled",
-          "orderDraft.deliveryAddress": null,
-        }
-      });
+      await Call.updateOne({ _id: freshCall._id }, { $set: { "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.status": "cancelled", "orderDraft.deliveryAddress": null } });
       return { response: "Done! Your order has been cancelled. Is there anything else I can help you with?" };
     }
   }
 
-  // Cancel booking during same call
   if (cancelIntent && (bookingFlowActive || looksLikeBookingIntent(latestUserText))) {
     const existingBooking = await Booking.findOne({ callId, status: { $in: ["confirmed","seated"] } });
     if (existingBooking) {
       await Booking.updateOne({ _id: existingBooking._id }, { $set: { status: "cancelled" } });
-      await Call.updateOne({ _id: freshCall._id }, {
-        $set: {
-          "bookingDraft.partySize": null,
-          "bookingDraft.requestedStart": null,
-          "bookingDraft.customerName": null,
-        }
-      });
+      await Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null } });
       return { response: "Done! Your booking has been cancelled. Is there anything else I can help you with?" };
     }
   }
 
-  // ── MODIFY FLOW (returning caller) ───────────────────────
-  if (modifyIntent && returnConfirmed && (confirmedBookingId || confirmedOrderId)) {
-    // Load what we're modifying
-    if (confirmedOrderId && (
-      latestUserText.toLowerCase().includes("order") ||
-      latestUserText.toLowerCase().includes("chicken") ||
-      latestUserText.toLowerCase().includes("quantity") ||
-      latestUserText.toLowerCase().includes("make it") ||
-      latestUserText.toLowerCase().includes("change it")
-    )) {
-      const existingOrder = await Order.findById(confirmedOrderId);
-      if (existingOrder) {
-        const minutesSincePlaced = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
-        if (minutesSincePlaced > 5) {
-          return { response: `I'm sorry, your order was placed ${Math.floor(minutesSincePlaced)} minutes ago and cannot be modified.` };
-        }
-        // Load order into draft so the flow can update it
-        orderDraft.items = existingOrder.items;
-        orderDraft.orderType = existingOrder.orderType;
-        orderDraft.deliveryAddress = existingOrder.deliveryAddress;
-        orderDraft.status = null; // allow modification
-        await Call.updateOne({ _id: freshCall._id }, {
-          $set: {
-            "orderDraft.items": existingOrder.items,
-            "orderDraft.orderType": existingOrder.orderType,
-            "orderDraft.deliveryAddress": existingOrder.deliveryAddress,
-            "orderDraft.status": null,
-          }
-        });
-      }
+  // ── MODIFY — RETURNING CALLER ─────────────────────────────
+  if (modifyIntent && returnConfirmed && confirmedOrderId) {
+    const existingOrder = await Order.findById(confirmedOrderId);
+    if (existingOrder) {
+      const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
+      if (mins > 5) return { response: `I'm sorry, your order was placed ${Math.floor(mins)} minutes ago and cannot be modified.` };
+      orderDraft.items = existingOrder.items;
+      orderDraft.orderType = existingOrder.orderType;
+      orderDraft.deliveryAddress = existingOrder.deliveryAddress;
+      orderDraft.status = null;
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: { "orderDraft.items": existingOrder.items, "orderDraft.orderType": existingOrder.orderType, "orderDraft.deliveryAddress": existingOrder.deliveryAddress, "orderDraft.status": null }
+      });
     }
   }
 
-  // ── ORDER CONFIRMED THIS CALL — handle modification ───────
+  // ── ORDER CONFIRMED — handle next action ──────────────────
   if (orderDraft.status === "confirmed") {
     if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
       return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
     }
-
-    // New order request — reset draft completely
     if (looksLikeOrderIntent(latestUserText) && !modifyIntent && !cancelIntent) {
       orderDraft = { items: [], orderType: null, status: null, deliveryAddress: null };
-      await Call.updateOne({ _id: freshCall._id }, {
-        $set: {
-          "orderDraft.items": [],
-          "orderDraft.orderType": null,
-          "orderDraft.status": null,
-          "orderDraft.deliveryAddress": null,
-        }
-      });
-      // Fall through to active flow
-    }
-    // New booking request — fall through to booking flow
-    else if (looksLikeBookingIntent(latestUserText)) {
-      // fall through
-    }
-    // Modification within 5 minutes
-    else if (modifyIntent || cancelIntent) {
-      const existingOrder = await Order.findOne({
-        callId,
-        status: { $in: ["confirmed", "preparing"] }
-      }).sort({ createdAt: -1 });
+      await Call.updateOne({ _id: freshCall._id }, { $set: { "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.status": null, "orderDraft.deliveryAddress": null } });
+    } else if (looksLikeBookingIntent(latestUserText)) {
+      // fall through to booking flow
+    } else if (modifyIntent || cancelIntent) {
+      const existingOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 });
       if (existingOrder) {
-        const minutesSincePlaced = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
-        if (minutesSincePlaced > 5) {
-          return { response: `I'm sorry, your order was placed ${Math.floor(minutesSincePlaced)} minutes ago and cannot be modified.` };
-        }
+        const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
+        if (mins > 5) return { response: `I'm sorry, your order was placed ${Math.floor(mins)} minutes ago and cannot be modified.` };
         const mentionsAddress = /\b(address|location|deliver|where)\b/i.test(latestUserText);
         orderDraft.items = existingOrder.items;
         orderDraft.orderType = existingOrder.orderType;
         orderDraft.deliveryAddress = mentionsAddress ? null : existingOrder.deliveryAddress;
         orderDraft.status = null;
         await Call.updateOne({ _id: freshCall._id }, {
-          $set: {
-            "orderDraft.items": existingOrder.items,
-            "orderDraft.orderType": existingOrder.orderType,
-            "orderDraft.deliveryAddress": mentionsAddress ? null : existingOrder.deliveryAddress,
-            "orderDraft.status": null,
-          }
+          $set: { "orderDraft.items": existingOrder.items, "orderDraft.orderType": existingOrder.orderType, "orderDraft.deliveryAddress": mentionsAddress ? null : existingOrder.deliveryAddress, "orderDraft.status": null }
         });
-        if (mentionsAddress) {
-          return { response: "Sure! What is the new delivery address?" };
-        }
+        if (mentionsAddress) return { response: "Sure! What is the new delivery address?" };
       }
+    } else if (/\b(yes|yeah|sure|okay|ok|yep)\b/i.test(latestUserText)) {
+      return { response: "Sure, what would you like to change?" };
     } else {
       return { response: "Is there anything else I can help you with?" };
     }
@@ -643,7 +520,6 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
   // ── ACTIVE FLOW ───────────────────────────────────────────
   if (bookingFlowActive || orderFlowActive || cancelIntent || modifyIntent) {
 
-    // Goodbye check
     if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
       return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
     }
@@ -671,7 +547,7 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
     }
     if (extracted.name) draft.customerName = extracted.name;
 
-    // Update order items — allow quantity updates
+    // Update order items
     if (orderExtracted.items?.length > 0) {
       const normalizedItems = orderExtracted.items.map(item =>
         typeof item === "string"
@@ -682,9 +558,7 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
         item?.name && agent.menu?.some(m => m.name.toLowerCase() === item.name.toLowerCase() && m.available)
       );
       for (const newItem of validItems) {
-        const existingIndex = orderDraft.items.findIndex(
-          e => e.name.toLowerCase() === newItem.name.toLowerCase()
-        );
+        const existingIndex = orderDraft.items.findIndex(e => e.name.toLowerCase() === newItem.name.toLowerCase());
         if (existingIndex >= 0) {
           orderDraft.items[existingIndex].quantity = newItem.quantity || 1;
         } else {
@@ -697,21 +571,18 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
     if (orderExtracted.deliveryAddress) orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
 
     // Save drafts
-    await Call.updateOne(
-      { _id: freshCall._id },
-      {
-        $set: {
-          "bookingDraft.partySize":      draft.partySize,
-          "bookingDraft.requestedStart": draft.requestedStart,
-          "bookingDraft.customerName":   draft.customerName,
-          "bookingDraft.customerPhone":  draft.customerPhone,
-          "orderDraft.items":            orderDraft.items,
-          "orderDraft.orderType":        orderDraft.orderType,
-          "orderDraft.status":           orderDraft.status,
-          "orderDraft.deliveryAddress":  orderDraft.deliveryAddress,
-        },
-      }
-    );
+    await Call.updateOne({ _id: freshCall._id }, {
+      $set: {
+        "bookingDraft.partySize":      draft.partySize,
+        "bookingDraft.requestedStart": draft.requestedStart,
+        "bookingDraft.customerName":   draft.customerName,
+        "bookingDraft.customerPhone":  draft.customerPhone,
+        "orderDraft.items":            orderDraft.items,
+        "orderDraft.orderType":        orderDraft.orderType,
+        "orderDraft.status":           orderDraft.status,
+        "orderDraft.deliveryAddress":  orderDraft.deliveryAddress,
+      },
+    });
 
     console.log("📋 Booking draft:", draft);
     console.log("🛒 Order draft:", orderDraft);
@@ -721,9 +592,7 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
       bookingFlowActive &&
       orderDraft.items?.length === 0 &&
       !orderDraft.orderType &&
-      draft.partySize &&
-      draft.requestedStart &&
-      draft.customerName;
+      draft.partySize && draft.requestedStart && draft.customerName;
 
     const dineInComplete =
       orderDraft.orderType === "dineIn" &&
@@ -741,83 +610,53 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
       orderDraft.deliveryAddress &&
       draft.customerName;
 
-    // Return AI response if nothing complete yet
     if (aiResponse && !bookingComplete && !dineInComplete && !pickupComplete && !deliveryComplete) {
       return { response: aiResponse };
     }
 
-    // ── DINE-IN: SAVE/UPDATE ORDER + BOOKING ─────────────
+    // ── DINE-IN ───────────────────────────────────────────
     if (dineInComplete) {
       if (processingCalls.has(callId)) return { response: "One moment please..." };
       processingCalls.add(callId);
-
       try {
-        const existingOrder = confirmedOrderId
-          ? await Order.findById(confirmedOrderId)
-          : null;
-
+        const existingOrder = confirmedOrderId ? await Order.findById(confirmedOrderId) : null;
         const total = orderDraft.items.reduce((sum, item) => {
-          const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
-          return sum + (menuItem?.price || 0) * (item.quantity || 1);
+          const mi = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+          return sum + (mi?.price || 0) * (item.quantity || 1);
         }, 0);
-
         const orderItems = orderDraft.items.map(item => {
-          const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
-          return { name: item.name, quantity: item.quantity || 1, price: menuItem?.price || 0, extras: item.extras || [] };
+          const mi = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+          return { name: item.name, quantity: item.quantity || 1, price: mi?.price || 0, extras: item.extras || [] };
         });
 
         if (existingOrder) {
-          await Order.updateOne({ _id: existingOrder._id }, {
-            $set: { items: orderItems, total, status: "confirmed" }
-          });
+          await Order.updateOne({ _id: existingOrder._id }, { $set: { items: orderItems, total, status: "confirmed" } });
         }
 
         const existingBooking = await Booking.findOne({ callId, status: { $in: ["confirmed","seated"] } });
-
         const result = existingBooking
           ? { success: true, booking: { startIso: existingBooking.startTime } }
-          : await findNearestAvailableSlot({
-              businessId: agent.businessId, requestedStart: draft.requestedStart,
-              durationMinutes: 90, partySize: draft.partySize, source: "ai",
-              agentId: agent._id, callId, customerName: draft.customerName, customerPhone: draft.customerPhone,
-            });
+          : await findNearestAvailableSlot({ businessId: agent.businessId, requestedStart: draft.requestedStart, durationMinutes: 90, partySize: draft.partySize, source: "ai", agentId: agent._id, callId, customerName: draft.customerName, customerPhone: draft.customerPhone });
 
         if (existingBooking) {
-          await Booking.updateOne({ _id: existingBooking._id }, {
-            $set: { partySize: draft.partySize, startTime: draft.requestedStart }
-          });
+          await Booking.updateOne({ _id: existingBooking._id }, { $set: { partySize: draft.partySize, startTime: draft.requestedStart } });
         }
 
         if (result?.success) {
           if (!existingOrder) {
-            await Order.create({
-              callId, businessId: agent.businessId, agentId: agent._id,
-              customerName: draft.customerName, customerPhone: draft.customerPhone || callerPhone,
-              items: orderItems, orderType: "dineIn", total, status: "confirmed",
-            });
+            await Order.create({ callId, businessId: agent.businessId, agentId: agent._id, customerName: draft.customerName, customerPhone: draft.customerPhone || callerPhone, items: orderItems, orderType: "dineIn", total, status: "confirmed" });
           }
-
-          await Call.updateOne({ _id: freshCall._id }, {
-            $set: {
-              "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null,
-              "orderDraft.items": [], "orderDraft.orderType": null,
-              "orderDraft.deliveryAddress": null, "orderDraft.status": "confirmed",
-            },
-          });
-
+          await Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null, "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.deliveryAddress": null, "orderDraft.status": "confirmed" } });
           const timeString = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
           const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
           console.log("✅ Dine-in confirmed");
           return { response: `Perfect! Your table for ${draft.partySize} is booked at ${timeString} under ${draft.customerName}, and your ${itemsSummary} will be ready when you arrive. Total is ${total} AED. Is there anything else I can help you with?` };
         }
-
         if (result?.suggestedTime) {
           const s = new Date(result.suggestedTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
           return { response: `We're fully booked at that time. Would ${s} work instead?` };
         }
-
         return { response: "I'm sorry, we don't have availability at that time. Would you like a different time?" };
-
       } catch (err) {
         console.error("❌ Dine-in error:", err.message);
         return { response: "Something went wrong. Please try again." };
@@ -830,9 +669,7 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
     if (bookingComplete) {
       if (processingCalls.has(callId)) return { response: "One moment please..." };
       processingCalls.add(callId);
-
       try {
-        // Check for existing booking this call or from returning caller
         const existingBooking = await Booking.findOne({
           $or: [
             { callId, status: { $in: ["confirmed","seated"] } },
@@ -841,52 +678,26 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
         });
 
         if (existingBooking) {
-          // Modify existing booking
-          await Booking.updateOne({ _id: existingBooking._id }, {
-            $set: {
-              partySize: draft.partySize,
-              startTime: draft.requestedStart,
-              customerName: draft.customerName,
-            }
-          });
-          await Call.updateOne({ _id: freshCall._id }, {
-            $set: {
-              "bookingDraft.partySize": null,
-              "bookingDraft.requestedStart": null,
-              "bookingDraft.customerName": null,
-            }
-          });
+          await Booking.updateOne({ _id: existingBooking._id }, { $set: { partySize: draft.partySize, startTime: draft.requestedStart, customerName: draft.customerName } });
+          await Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null } });
           const timeString = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
           console.log("✅ Booking updated");
           return { response: `Done! Your booking has been updated to ${draft.partySize} people at ${timeString} under ${draft.customerName}. Is there anything else I can help you with?` };
         }
 
-        const result = await findNearestAvailableSlot({
-          businessId: agent.businessId, requestedStart: draft.requestedStart,
-          durationMinutes: 90, partySize: draft.partySize, source: "ai",
-          agentId: agent._id, callId, customerName: draft.customerName, customerPhone: draft.customerPhone,
-        });
+        const result = await findNearestAvailableSlot({ businessId: agent.businessId, requestedStart: draft.requestedStart, durationMinutes: 90, partySize: draft.partySize, source: "ai", agentId: agent._id, callId, customerName: draft.customerName, customerPhone: draft.customerPhone });
 
         if (result?.success && result.booking) {
-          await Call.updateOne({ _id: freshCall._id }, {
-            $set: {
-              "bookingDraft.partySize": null,
-              "bookingDraft.requestedStart": null,
-              "bookingDraft.customerName": null,
-            }
-          });
+          await Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null } });
           const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
           console.log("✅ Booking confirmed");
           return { response: `Perfect! Your table for ${draft.partySize} is confirmed at ${timeString} under ${draft.customerName}. Is there anything else I can help you with?` };
         }
-
         if (result?.suggestedTime) {
           const s = new Date(result.suggestedTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
           return { response: `We're fully booked at that time. Would ${s} work instead?` };
         }
-
         return { response: "I'm sorry, we don't have availability at that time. Would you like a different time?" };
-
       } catch (err) {
         console.error("❌ Booking error:", err.message);
         return { response: "Something went wrong. Please try again." };
@@ -897,62 +708,28 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
 
     // ── PICKUP OR DELIVERY ────────────────────────────────
     if (pickupComplete || deliveryComplete) {
-      // Only update if there's a confirmed order ID from returning caller flow
-      // For same-call orders, always create new
-      const existingOrder = confirmedOrderId
-        ? await Order.findById(confirmedOrderId)
-        : null;
+      const existingOrder = confirmedOrderId ? await Order.findById(confirmedOrderId) : null;
 
       const total = orderDraft.items.reduce((sum, item) => {
-        const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
-        return sum + (menuItem?.price || 0) * (item.quantity || 1);
+        const mi = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+        return sum + (mi?.price || 0) * (item.quantity || 1);
       }, 0);
-
       const orderItems = orderDraft.items.map(item => {
-        const menuItem = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
-        return { name: item.name, quantity: item.quantity || 1, price: menuItem?.price || 0, extras: item.extras || [] };
+        const mi = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+        return { name: item.name, quantity: item.quantity || 1, price: mi?.price || 0, extras: item.extras || [] };
       });
 
       if (existingOrder) {
         const updatedAddress = orderDraft.deliveryAddress || existingOrder.deliveryAddress;
-        await Order.updateOne({ _id: existingOrder._id }, {
-          $set: {
-            items: orderItems,
-            deliveryAddress: updatedAddress,
-            orderType: orderDraft.orderType,
-            customerName: draft.customerName,
-            total,
-            status: "confirmed",
-          }
-        });
-        // Make sure we use the updated address in the confirmation message
+        await Order.updateOne({ _id: existingOrder._id }, { $set: { items: orderItems, deliveryAddress: updatedAddress, orderType: orderDraft.orderType, customerName: draft.customerName, total, status: "confirmed" } });
         orderDraft.deliveryAddress = updatedAddress;
         console.log("✅ Order updated:", orderDraft.orderType);
       } else {
-        // Create new order
-        await Order.create({
-          callId,
-          businessId:      agent.businessId,
-          agentId:         agent._id,
-          customerName:    draft.customerName,
-          customerPhone:   draft.customerPhone || callerPhone,
-          deliveryAddress: orderDraft.deliveryAddress || null,
-          items:           orderItems,
-          orderType:       orderDraft.orderType,
-          total,
-          status:          "confirmed",
-        });
+        await Order.create({ callId, businessId: agent.businessId, agentId: agent._id, customerName: draft.customerName, customerPhone: draft.customerPhone || callerPhone, deliveryAddress: orderDraft.deliveryAddress || null, items: orderItems, orderType: orderDraft.orderType, total, status: "confirmed" });
         console.log("✅ Order saved:", orderDraft.orderType);
       }
 
-      await Call.updateOne({ _id: freshCall._id }, {
-        $set: {
-          "orderDraft.items":           [],
-          "orderDraft.orderType":       null,
-          "orderDraft.deliveryAddress": null,
-          "orderDraft.status":          "confirmed",
-        },
-      });
+      await Call.updateOne({ _id: freshCall._id }, { $set: { "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.deliveryAddress": null, "orderDraft.status": "confirmed" } });
 
       const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
       const confirmMsg = orderDraft.orderType === "delivery"
@@ -962,6 +739,7 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
       return { response: confirmMsg };
     }
 
+    // Fallback with context-aware hints
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress) {
       return { response: "What is the delivery address?" };
     }
@@ -976,16 +754,13 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
 
   // ── GOODBYE ───────────────────────────────────────────────
   if (/\b(bye|goodbye|thank you|thanks|that's all|nothing else|no thank|bye bye)\b/i.test(latestUserText)) {
-    return { response: "Have a wonderful day, Goodbye!", end_call: true };
+    return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
   }
 
   // ── GENERAL FALLBACK ──────────────────────────────────────
- // ── GENERAL FALLBACK ──────────────────────────────────────
-
-  // If customer just said hello/hi and agent already greeted, don't greet again
   const isJustGreeting = /^(hi|hello|hey|good morning|good evening|good afternoon|howdy|greetings)[\s\?\!\.]*$/i.test(latestUserText.trim());
   if (isJustGreeting) {
-    return { response: "How can I help you?" };
+    return { response: "How can I help you today?" };
   }
 
   const systemPrompt = buildSystemPrompt(agent);
@@ -1000,6 +775,7 @@ if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserTe
     { role: "user", content: latestUserText || "Hello" },
   ]);
 
-  return { response: aiReply || "How can I help you?" };
+  return { response: aiReply || "How can I help you today?" };
 }
+
 module.exports = { processLLMMessage };
