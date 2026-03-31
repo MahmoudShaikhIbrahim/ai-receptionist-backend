@@ -14,7 +14,7 @@ const activeCallProcessing = new Map(); // callId -> timestamp
 function acquireLock(callId) {
   const now = Date.now();
   const last = activeCallProcessing.get(callId);
-  if (last && now - last < 3000) return false; // locked for 3 seconds
+  if (last && now - last < 500) return false; // locked for 500ms
   activeCallProcessing.set(callId, now);
   return true;
 }
@@ -595,10 +595,10 @@ async function _processMessage(body, req, callId) {
       draft.partySize && draft.requestedStart && draft.customerName;
 
     const dineInComplete =
-      orderDraft.orderType === "dineIn" &&
+      (orderDraft.orderType === "dineIn" || (orderDraft.items?.length > 0 && draft.partySize && draft.requestedStart)) &&
       orderDraft.items?.length > 0 &&
       draft.partySize && draft.requestedStart && draft.customerName;
-
+      
     const pickupComplete =
       orderDraft.orderType === "pickup" &&
       orderDraft.items?.length > 0 &&
@@ -614,6 +614,12 @@ async function _processMessage(body, req, callId) {
       return { response: aiResponse };
     }
 
+    // Force orderType to dineIn if all fields collected but orderType is null
+    if (dineInComplete && !orderDraft.orderType) {
+      orderDraft.orderType = "dineIn";
+    }
+
+  
     // ── DINE-IN ───────────────────────────────────────────
     if (dineInComplete) {
       if (processingCalls.has(callId)) return { response: "One moment please..." };
