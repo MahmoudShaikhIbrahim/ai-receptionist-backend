@@ -136,10 +136,10 @@ ${recentConvo}
 Customer just said: "${text}"
 
 STRICT RULES:
-- NEVER assume orderType. If customer just says "I want to order" ask "Would you like delivery, pickup, or dine-in?"
+- If customer mentions the order type in their message (e.g. "order for dine in", "pickup order", "delivery order"), extract it immediately. ONLY ask "Would you like delivery, pickup, or dine-in?" if the customer did NOT mention the order type.
 - NEVER set orderType to dineIn just because customer wants to book a table. orderType dineIn is ONLY when customer explicitly orders food to eat inside. Booking a table is NOT an order.
 - If customer says "book a table" or "reserve a table" with no food items, leave orderType as null.
-- For pickup: collect items first, then name. NEVER ask address or party size.
+- For pickup: collect items first, then time, then name. NEVER ask address or party size.
 - For delivery: collect items first, then address, then name. NEVER ask party size.
 - For dineIn: collect items, how many people, time, and name. NEVER assume partySize from the quantity of food items ordered. Always ask separately how many people will be dining.
 - NEVER say "party size" — say "how many people" instead.
@@ -510,8 +510,6 @@ async function _processMessage(body, req, callId) {
         });
         if (mentionsAddress) return { response: "Sure! What is the new delivery address?" };
       }
-    } else if (/\b(yes|yeah|sure|okay|ok|yep)\b/i.test(latestUserText)) {
-      return { response: "Sure, what would you like to change?" };
     } else {
       return { response: "Is there anything else I can help you with?" };
     }
@@ -602,6 +600,7 @@ async function _processMessage(body, req, callId) {
     const pickupComplete =
       orderDraft.orderType === "pickup" &&
       orderDraft.items?.length > 0 &&
+      draft.requestedStart &&
       draft.customerName;
 
     const deliveryComplete =
@@ -768,6 +767,9 @@ async function _processMessage(body, req, callId) {
     }
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && orderDraft.deliveryAddress && !draft.customerName) {
       return { response: "What name should I put the order under?" };
+    }
+    if (orderDraft.orderType === "pickup" && orderDraft.items?.length > 0 && !draft.requestedStart) {
+      return { response: "What time would you like to pick up your order?" };
     }
     if (orderDraft.orderType === "pickup" && orderDraft.items?.length > 0 && !draft.customerName) {
       return { response: "What name should I put the order under?" };
