@@ -14,7 +14,7 @@ const activeCallProcessing = new Map(); // callId -> timestamp
 function acquireLock(callId) {
   const now = Date.now();
   const last = activeCallProcessing.get(callId);
-  if (last && now - last < 500) return false; // locked for 500ms
+  if (last && now - last < 200) return false; // locked for 200ms
   activeCallProcessing.set(callId, now);
   return true;
 }
@@ -141,7 +141,7 @@ STRICT RULES:
 - If customer says "book a table" or "reserve a table" with no food items, leave orderType as null.
 - For pickup: collect items first, then name. NEVER ask address or party size.
 - For delivery: collect items first, then address, then name. NEVER ask party size.
-- For dineIn: collect items, how many people, time, and name.
+- For dineIn: collect items, how many people, time, and name. NEVER assume partySize from the quantity of food items ordered. Always ask separately how many people will be dining.
 - NEVER say "party size" — say "how many people" instead.
 - Never ask for phone number or date.
 - Keep responses short and warm.
@@ -731,6 +731,16 @@ async function _processMessage(body, req, callId) {
         orderDraft.deliveryAddress = updatedAddress;
         console.log("✅ Order updated:", orderDraft.orderType);
       } else {
+        // Double-check no order was saved by a parallel request
+        const raceCheck = await Order.findOne({ callId, orderType: orderDraft.orderType, status: "confirmed", createdAt: { $gte: new Date(Date.now() - 5000) } });
+        if (raceCheck) {
+          console.log("⏭ Order already saved by parallel request, skipping");
+          const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
+          const confirmMsg = orderDraft.orderType === "delivery"
+            ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
+            : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`;
+          return { response: confirmMsg };
+        }
         await Order.create({ callId, businessId: agent.businessId, agentId: agent._id, customerName: draft.customerName, customerPhone: draft.customerPhone || callerPhone, deliveryAddress: orderDraft.deliveryAddress || null, items: orderItems, orderType: orderDraft.orderType, total, status: "confirmed" });
         console.log("✅ Order saved:", orderDraft.orderType);
       }
