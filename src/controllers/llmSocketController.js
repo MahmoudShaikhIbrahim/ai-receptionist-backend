@@ -321,7 +321,10 @@ async function _processMessage(body, req, callId) {
 
   const mentionsChange = /\b(cancel|change|modify|update|edit|fix|correct|i called|earlier|last time|my order|my booking|placed an order|made a booking)\b/i.test(latestUserText);
 
-  if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed) {
+  // Only check returning caller if no active order/booking draft in progress this call
+  const hasActiveDraft = orderDraft.items?.length > 0 || orderDraft.orderType || draft.partySize || draft.requestedStart;
+
+  if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed && !hasActiveDraft) {
     const previousCall = await Call.findOne({
       _id: { $ne: freshCall._id },
       $or: [{ callerNumber: callerPhone }, { "bookingDraft.customerPhone": callerPhone }],
