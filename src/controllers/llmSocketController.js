@@ -746,11 +746,18 @@ async function _processMessage(body, req, callId) {
       }
 
       await Call.updateOne({ _id: freshCall._id }, { $set: { "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.deliveryAddress": null, "orderDraft.status": "confirmed" } });
+      
 
       const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
       const confirmMsg = orderDraft.orderType === "delivery"
         ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
         : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`;
+
+      // Clear in-memory draft immediately to prevent leaking into next flow
+      orderDraft.items = [];
+      orderDraft.orderType = null;
+      orderDraft.deliveryAddress = null;
+      orderDraft.status = "confirmed";
 
       return { response: confirmMsg };
     }
