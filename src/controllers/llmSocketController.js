@@ -14,7 +14,7 @@ const activeCallProcessing = new Map(); // callId -> timestamp
 function acquireLock(callId) {
   const now = Date.now();
   const last = activeCallProcessing.get(callId);
-  if (last && now - last < 200) return false; // locked for 200ms
+  if (last && now - last < 1000) return false; // locked for 1100ms
   activeCallProcessing.set(callId, now);
   return true;
 }
@@ -762,7 +762,7 @@ async function _processMessage(body, req, callId) {
       return { response: confirmMsg };
     }
 
-    // Fallback with context-aware hints
+   // Fallback with context-aware hints
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress) {
       return { response: "What is the delivery address?" };
     }
@@ -771,6 +771,9 @@ async function _processMessage(body, req, callId) {
     }
     if (orderDraft.orderType === "pickup" && orderDraft.items?.length > 0 && !draft.customerName) {
       return { response: "What name should I put the order under?" };
+    }
+    if (orderDraft.orderType === "dineIn" && orderDraft.items?.length > 0 && draft.partySize && draft.requestedStart && !draft.customerName) {
+      return { response: "What name should I put the reservation under?" };
     }
     return { response: aiResponse || "How can I help you?" };
   }
