@@ -14,7 +14,7 @@ const activeCallProcessing = new Map(); // callId -> timestamp
 function acquireLock(callId) {
   const now = Date.now();
   const last = activeCallProcessing.get(callId);
-  if (last && now - last < 1000) return false; // locked for 1100ms
+  if (last && now - last < 300) return false; // locked for 300ms
   activeCallProcessing.set(callId, now);
   return true;
 }

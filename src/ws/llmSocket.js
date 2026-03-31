@@ -101,7 +101,8 @@ function handleLLMWebSocket(ws, req) {
         req
       );
 
-      const responseText   = result?.response?.trim() || "I'm sorry, could you repeat that?";
+      if (!result || !result.response) return;
+      const responseText = result.response.trim();
       const shouldEndCall  = result?.end_call === true;
 
       console.log("📤 Response:", responseText);

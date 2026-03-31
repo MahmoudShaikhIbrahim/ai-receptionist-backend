@@ -20,6 +20,7 @@ const OrderSchema = new mongoose.Schema(
     customerName: String,
     customerPhone: String,
     deliveryAddress: { type: String, default: null },
+    scheduledTime: { type: Date, default: null },
     items: [OrderItemSchema],
     orderType: {
       type: String,
