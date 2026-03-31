@@ -740,10 +740,10 @@ async function _processMessage(body, req, callId) {
           const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
           const confirmMsg = orderDraft.orderType === "delivery"
             ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
-            : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`;
+            : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}${draft.requestedStart ? ` at ${new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}. Total is ${total} AED. Is there anything else I can help you with?`
           return { response: confirmMsg };
         }
-        await Order.create({ callId, businessId: agent.businessId, agentId: agent._id, customerName: draft.customerName, customerPhone: draft.customerPhone || callerPhone, deliveryAddress: orderDraft.deliveryAddress || null, items: orderItems, orderType: orderDraft.orderType, total, status: "confirmed" });
+        await Order.create({ callId, businessId: agent.businessId, agentId: agent._id, customerName: draft.customerName, customerPhone: draft.customerPhone || callerPhone, deliveryAddress: orderDraft.deliveryAddress || null, items: orderItems, orderType: orderDraft.orderType, scheduledTime: draft.requestedStart || null, total, status: "confirmed" });
         console.log("✅ Order saved:", orderDraft.orderType);
       }
 
@@ -753,7 +753,7 @@ async function _processMessage(body, req, callId) {
       const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
       const confirmMsg = orderDraft.orderType === "delivery"
         ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
-        : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`;
+        : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}${draft.requestedStart ? ` at ${new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}. Total is ${total} AED. Is there anything else I can help you with?`
 
       // Clear in-memory draft immediately to prevent leaking into next flow
       orderDraft.items = [];
@@ -790,7 +790,7 @@ async function _processMessage(body, req, callId) {
 
   // ── GENERAL FALLBACK ──────────────────────────────────────
   const isJustGreeting = /^(hi|hello|hey|good morning|good evening|good afternoon|howdy|greetings)[\s\?\!\.]*$/i.test(latestUserText.trim());
-  if (isJustGreeting) {
+  if (isJustGreeting && !orderDraft.items?.length && !orderDraft.orderType && !draft.partySize) {
     return { response: "How can I help you today?" };
   }
 
