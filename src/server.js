@@ -16,6 +16,8 @@ const bookingRoutes = require("./routes/bookingRoutes");
 const floorRoutes = require("./routes/floorRoutes");
 const tableRoutes = require("./routes/tableRoutes");
 const path = require("path");
+const orderRoutes = require("./routes/orderRoutes");
+
 
 const { handleLLMWebSocket } = require("./ws/llmSocket");
 
@@ -41,6 +43,7 @@ app.use("/business", businessRoutes);
 app.use("/bookings", bookingRoutes);
 app.use("/floors", floorRoutes);
 app.use("/tables", tableRoutes);
+app.use("/orders", orderRoutes);
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 // =====================
