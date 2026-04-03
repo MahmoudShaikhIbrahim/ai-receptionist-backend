@@ -18,14 +18,18 @@ exports.listBookings = async (req, res) => {
       100
     );
 
-    const [items, total] = await Promise.all([
-      Booking.find({ businessId })
+    const { status } = req.query;
+const query = { businessId };
+if (status) query.status = status;
+
+const [items, total] = await Promise.all([
+  Booking.find(query)
         .sort({ startIso: 1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .populate("tables.tableId", "label capacity zone")
         .lean(),
-      Booking.countDocuments({ businessId }),
+      Booking.countDocuments(query),
     ]);
 
     return res.json({
