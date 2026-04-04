@@ -221,7 +221,7 @@ function looksLikeCancelIntent(text) {
 
 function looksLikeModifyIntent(text) {
   if (!text) return false;
-  return /\b(change|modify|update|edit|make it|instead|switch|different|wrong|correct|fix)\b/i.test(text);
+  return /\b(change|modify|update|edit|make it|instead|switch|different|wrong|correct|fix|not at|it's at|no it's|no no|i said|i meant|actually)\b/i.test(text);
 }
 
 // ─── BOOKING ENGINE LOCK ──────────────────────────────────────────────────────
@@ -590,9 +590,68 @@ async function _processMessage(body, req, callId) {
         });
         if (mentionsAddress) return { response: "Sure! What is the new delivery address?" };
       }
-    } else {
-      return { response: "Is there anything else I can help you with?" };
+    } else if (extracted.time || extracted.name || extracted.partySize || orderExtracted.items?.length > 0) {
+  // Customer correcting something after confirmation
+  const existingOrder = await Order.findOne({ callId, status: { $in: ["confirmed", "preparing"] } }).sort({ createdAt: -1 });
+  const existingBooking = await Booking.findOne({ callId, status: { $in: ["confirmed", "seated"] } }).sort({ createdAt: -1 });
+
+  const updates = {};
+  let confirmMsg = "";
+
+  if (extracted.time) {
+    try {
+      const [h, m] = extracted.time.split(":").map(Number);
+      const d = new Date();
+      d.setHours(h, m || 0, 0, 0);
+      updates.scheduledTime = d;
+      if (existingBooking) {
+        await Booking.updateOne({ _id: existingBooking._id }, { $set: { startTime: d } });
+      }
+      const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+      confirmMsg += `Updated time to ${timeStr}. `;
+    } catch {}
+  }
+
+  if (extracted.name) {
+    updates.customerName = extracted.name;
+    if (existingBooking) {
+      await Booking.updateOne({ _id: existingBooking._id }, { $set: { customerName: extracted.name } });
     }
+    confirmMsg += `Updated name to ${extracted.name}. `;
+    draft.customerName = extracted.name;
+    await Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.customerName": extracted.name } });
+  }
+
+  if (extracted.partySize) {
+    updates.partySize = extracted.partySize;
+    if (existingBooking) {
+      await Booking.updateOne({ _id: existingBooking._id }, { $set: { partySize: extracted.partySize } });
+    }
+    confirmMsg += `Updated to ${extracted.partySize} people. `;
+  }
+
+  if (orderExtracted.items?.length > 0 && existingOrder) {
+    const orderItems = orderExtracted.items.map(item => {
+      const mi = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+      return { name: item.name, quantity: item.quantity || 1, price: mi?.price || 0, extras: item.extras || [] };
+    });
+    const total = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    updates.items = orderItems;
+    updates.total = total;
+    confirmMsg += `Updated your order. `;
+  }
+
+  if (existingOrder && Object.keys(updates).length > 0) {
+    await Order.updateOne({ _id: existingOrder._id }, { $set: updates });
+  }
+
+  if (confirmMsg) {
+    return { response: `${confirmMsg.trim()} Is there anything else I can help you with?` };
+  }
+  return { response: "Is there anything else I can help you with?" };
+} else {
+  return { response: "Is there anything else I can help you with?" };
+}
   }
 
   // ── ACTIVE FLOW ───────────────────────────────────────────
