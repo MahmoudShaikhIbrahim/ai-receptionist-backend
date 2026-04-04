@@ -93,6 +93,7 @@ ${formatOpeningHours(agent.openingHours)}
 ${hasOrders && agent.menu?.length > 0 ? `Menu:\n${formatMenu(agent.menu)}` : ""}
 
 Rules:
+- Ask ONE question at a time. Never ask multiple questions in a single response.
 - Keep responses short and natural, suitable for a phone call
 - Never ask for the customer's phone number
 - Never mention dates for reservations, only times
