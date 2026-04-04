@@ -138,7 +138,24 @@ ${recentConvo}
 Customer just said: "${text}"
 
 STRICT RULES:
-- If customer mentions the order type in their message (e.g. "order for dine in", "pickup order", "delivery order"), extract it immediately. ONLY ask "Would you like delivery, pickup, or dine-in?" if the customer did NOT mention the order type.
+STRICT RULES:
+- If the customer ONLY said "book a table" or "reserve a table" with NO food items mentioned, this is a BOOKING ONLY. Do NOT ask about order type. Do NOT ask if they want food. Just collect partySize, time, and name.
+- NEVER ask "Would you like delivery, pickup, or dine-in?" during a booking-only flow.
+- If customer mentions the order type in their message (e.g. "order for dine in", "pickup order", "delivery order"), extract it immediately. ONLY ask "Would you like delivery, pickup, or dine-in?" if the customer explicitly mentions they want to ORDER food and did NOT mention the order type.
+- NEVER set orderType to dineIn just because customer wants to book a table. orderType dineIn is ONLY when customer explicitly orders food to eat inside. Booking a table is NOT an order.
+- If customer says "book a table" or "reserve a table" with no food items, leave orderType as null.
+- For pickup: collect items first, then time, then name. NEVER ask address or party size.
+- For delivery: collect items first, then address, then name. NEVER ask party size.
+- For dineIn: collect items, how many people, time, and name. NEVER assume partySize from the quantity of food items ordered. Always ask separately how many people will be dining.
+- NEVER say "party size" — say "how many people" instead.
+- Never ask for phone number or date.
+- Keep responses short and warm.
+- Always respond in the same language the customer is speaking. If the customer uses any Arabic words or speaks Arabic, respond fully in Arabic. If the customer speaks only English, respond in English. Never mix languages in your response.
+- If customer corrects their name, use the corrected name.
+- For delivery address: extract ONLY meaningful location info. Remove filler words like "uh", "um", "it's in", "the building name is". Only include parts customer actually mentioned. Never include "null" in address.
+- If customer wants to CANCEL booking or order, set intent to "cancel".
+- If customer wants to MODIFY booking or order, set intent to "modify".
+- If all required info collected, return null for response.
 - NEVER set orderType to dineIn just because customer wants to book a table. orderType dineIn is ONLY when customer explicitly orders food to eat inside. Booking a table is NOT an order.
 - If customer says "book a table" or "reserve a table" with no food items, leave orderType as null.
 - For pickup: collect items first, then time, then name. NEVER ask address or party size.
@@ -789,9 +806,14 @@ async function _processMessage(body, req, callId) {
       return { response: "What name should I put the order under?" };
     }
     if (orderDraft.orderType === "dineIn" && orderDraft.items?.length > 0 && draft.partySize && draft.requestedStart && !draft.customerName) {
-      return { response: "What name should I put the reservation under?" };
-    }
-    return { response: aiResponse || "How can I help you?" };
+  return { response: "What name should I put the reservation under?" };
+}
+// Booking-only flow missing name
+if (bookingFlowActive && !orderFlowActive && draft.partySize && draft.requestedStart && !draft.customerName) {
+  return { response: "What name should I put the booking under?" };
+}
+
+return { response: aiResponse || "How can I help you?" };
   }
 
   // ── GOODBYE ───────────────────────────────────────────────
