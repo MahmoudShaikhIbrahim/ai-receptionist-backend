@@ -318,7 +318,7 @@ async function _processMessage(body, req, callId) {
   let awaitingReturnConfirmation = freshCall.meta?.awaitingReturnConfirmation ?? false;
   let returnConfirmed = freshCall.meta?.returnConfirmed ?? false;
 
-  const mentionsChange = /\b(cancel|change|modify|update|edit|fix|correct|i called|earlier|last time|my order|my booking|placed an order|made a booking)\b/i.test(latestUserText);
+  const mentionsChange = /\b(cancel|change|modify|update|edit|fix|correct|i called|i ordered|earlier|last time|my order|my booking|placed an order|made a booking|status|where is my|check my|track my|order status|what happened|how long|when will)\b/i.test(latestUserText);
   const hasActiveDraft = orderDraft.items?.length > 0 || orderDraft.orderType || draft.partySize || draft.requestedStart;
 
   if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed && !hasActiveDraft) {
@@ -559,8 +559,11 @@ async function _processMessage(body, req, callId) {
         }
       });
     } else if (looksLikeBookingIntent(latestUserText)) {
-      // fall through to booking flow
-    } else if (modifyIntent || cancelIntent) {
+  // Clear name so booking flow starts fresh
+  draft.customerName = null;
+  await Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.customerName": null } });
+  // fall through to booking flow
+} else if (modifyIntent || cancelIntent) {
       const existingOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 });
       if (existingOrder) {
         const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
@@ -896,14 +899,7 @@ async function _processMessage(body, req, callId) {
         console.log("✅ Order saved:", orderDraft.orderType);
       }
 
-      await Call.updateOne({ _id: freshCall._id }, {
-        $set: {
-          "orderDraft.items": [],
-          "orderDraft.orderType": null,
-          "orderDraft.deliveryAddress": null,
-          "orderDraft.status": "confirmed",
-        }
-      });
+      await Call.updateOne({ _id: freshCall._id }, { $set: { "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.deliveryAddress": null, "orderDraft.status": "confirmed", "bookingDraft.customerName": null } });
 
       const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
       const confirmMsg = orderDraft.orderType === "delivery"
