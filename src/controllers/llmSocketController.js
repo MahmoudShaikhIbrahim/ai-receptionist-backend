@@ -87,6 +87,8 @@ function buildSystemPrompt(agent) {
 
 You can help customers with: ${features.join(", ") || "general inquiries"}.
 
+LANGUAGE RULE: Always respond in the same language the customer is speaking. If the customer uses any Arabic words or speaks Arabic, respond fully in Arabic. If the customer speaks only English, respond in English. Never mix languages in your response.
+
 Opening Hours:
 ${formatOpeningHours(agent.openingHours)}
 
@@ -387,12 +389,20 @@ async function _processMessage(body, req, callId) {
         }
       }
       if (!contextMsg && returningOrderId) {
-        const ro = await Order.findById(returningOrderId).lean();
-        if (ro) {
-          const itemsSummary = ro.items.map(i => `${i.name} x${i.quantity}`).join(", ");
-          contextMsg = `I have your ${ro.orderType} order for ${itemsSummary}.`;
-        }
-      }
+  const ro = await Order.findById(returningOrderId).lean();
+  if (ro) {
+    const itemsSummary = ro.items.map(i => `${i.name} x${i.quantity}`).join(", ");
+    const statusMap = {
+      confirmed: "received and confirmed",
+      preparing: "currently being prepared",
+      ready: "ready for pickup",
+      delivered: "delivered",
+      cancelled: "cancelled",
+    };
+    const statusMsg = statusMap[ro.status] || ro.status;
+    contextMsg = `I have your ${ro.orderType} order for ${itemsSummary} — it's ${statusMsg}.`;
+  }
+}
       return { response: `Great! ${contextMsg} How can I help you?` };
     }
 
