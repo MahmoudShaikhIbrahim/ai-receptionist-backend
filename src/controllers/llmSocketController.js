@@ -638,39 +638,34 @@ async function _processMessage(body, req, callId) {
       }
     }
 
-    if (orderExtracted.orderType && orderExtracted.orderType !== orderDraft.orderType) {
-  // Order type changed — clear fields that don't apply to new type
-  const prevType = orderDraft.orderType;
-  orderDraft.orderType = orderExtracted.orderType;
+    // ── ORDER TYPE SWITCH ─────────────────────────────────
+    if (orderExtracted.orderType) {
+      const newType = orderExtracted.orderType;
+      const prevType = orderDraft.orderType;
 
-  if (orderExtracted.orderType === "dineIn") {
-    // Switching to dineIn — clear delivery address, clear pickup time
-    orderDraft.deliveryAddress = null;
-    draft.requestedStart = null;
-  } else if (orderExtracted.orderType === "pickup") {
-    // Switching to pickup — clear delivery address and party size
-    orderDraft.deliveryAddress = null;
-    draft.partySize = null;
-  } else if (orderExtracted.orderType === "delivery") {
-    // Switching to delivery — clear party size and pickup time
-    draft.partySize = null;
-    draft.requestedStart = null;
-    orderDraft.deliveryAddress = null;
-  }
+      if (newType !== prevType) {
+        // Type changed — clear all fields that don't apply
+        orderDraft.orderType = newType;
+        orderDraft.deliveryAddress = null;
+        draft.partySize = null;
+        draft.requestedStart = null;
 
-  // Save cleared fields to MongoDB too
-  await Call.updateOne({ _id: freshCall._id }, {
-    $set: {
-      "orderDraft.deliveryAddress": orderDraft.deliveryAddress,
-      "bookingDraft.requestedStart": draft.requestedStart,
-      "bookingDraft.partySize": draft.partySize,
+        // Save immediately to MongoDB so parallel requests see the new type
+        await Call.updateOne({ _id: freshCall._id }, {
+          $set: {
+            "orderDraft.orderType": newType,
+            "orderDraft.deliveryAddress": null,
+            "bookingDraft.partySize": null,
+            "bookingDraft.requestedStart": null,
+          }
+        });
+      } else {
+        orderDraft.orderType = newType;
+      }
     }
-  });
-} else if (orderExtracted.orderType) {
-  orderDraft.orderType = orderExtracted.orderType;
-}
 
-if (orderExtracted.deliveryAddress) orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
+    if (orderExtracted.deliveryAddress) orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
+
     // Save drafts
     await Call.updateOne({ _id: freshCall._id }, {
       $set: {
@@ -716,7 +711,6 @@ if (orderExtracted.deliveryAddress) orderDraft.deliveryAddress = orderExtracted.
       return { response: aiResponse };
     }
 
-    // Force orderType to dineIn if all fields collected but orderType is null
     if (dineInComplete && !orderDraft.orderType) {
       orderDraft.orderType = "dineIn";
     }
@@ -957,13 +951,18 @@ if (orderExtracted.deliveryAddress) orderDraft.deliveryAddress = orderExtracted.
     if (orderDraft.orderType === "pickup" && orderDraft.items?.length > 0 && !draft.customerName) {
       return { response: "What name should I put the order under?" };
     }
+    if (orderDraft.orderType === "dineIn" && orderDraft.items?.length > 0 && !draft.partySize) {
+      return { response: "How many people will be dining?" };
+    }
+    if (orderDraft.orderType === "dineIn" && orderDraft.items?.length > 0 && draft.partySize && !draft.requestedStart) {
+      return { response: "What time would you like to dine?" };
+    }
     if (orderDraft.orderType === "dineIn" && orderDraft.items?.length > 0 && draft.partySize && draft.requestedStart && !draft.customerName) {
       return { response: "What name should I put the reservation under?" };
     }
     if (bookingFlowActive && !orderFlowActive && draft.partySize && draft.requestedStart && !draft.customerName) {
       return { response: "What name should I put the booking under?" };
     }
-
     return { response: aiResponse || "How can I help you?" };
   }
 
