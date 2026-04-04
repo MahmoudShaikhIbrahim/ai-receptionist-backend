@@ -138,7 +138,14 @@ Customer just said: "${text}"
 STRICT RULES:
 - If the customer says "book a table", "reserve a table", or similar with NO food items mentioned, this is BOOKING ONLY. Do NOT ask about order type. Do NOT ask if they want food. Just collect partySize, time, and name.
 - NEVER ask "Would you like delivery, pickup, or dine-in?" during a booking-only flow where no food was mentioned.
-- If customer explicitly mentions wanting to ORDER food and does NOT mention order type, THEN ask "Would you like delivery, pickup, or dine-in?"
+- ALWAYS extract orderType when customer mentions it in ANY form:
+  * "dine in", "dine-in", "eat here", "eat at the restaurant", "come to the restaurant", "walk in", "dining" = "dineIn"
+  * "pickup", "pick up", "collect", "take away", "takeaway", "I'll come get it" = "pickup"
+  * "delivery", "deliver it", "bring it to me" = "delivery"
+- If customer says "make it dine in", "change to dine in", "actually dine in", "I want to eat here", "no delivery just dine in" — extract orderType as "dineIn" immediately.
+- If customer says "make it pickup", "change to pickup", "I'll collect it" — extract orderType as "pickup" immediately.
+- If customer says "make it delivery", "change to delivery" — extract orderType as "delivery" immediately.
+- ONLY ask "Would you like delivery, pickup, or dine-in?" if customer has ordered food and has NOT mentioned any order type at all.
 - NEVER set orderType to dineIn just because customer wants to book a table. orderType dineIn is ONLY when customer explicitly orders food to eat inside.
 - If customer says "book a table" or "reserve a table" with no food items, leave orderType as null.
 - For pickup: collect items first, then time, then name. NEVER ask address or party size.
@@ -605,6 +612,17 @@ async function _processMessage(body, req, callId) {
     console.log("🧠 Extracted:", extracted);
     console.log("🛒 Order extracted:", orderExtracted);
     console.log("🎯 Intent:", intent);
+
+    // Force extract orderType from keywords if AI missed it
+if (!orderExtracted.orderType) {
+  if (/\b(dine.?in|eat here|eat at|dining|come in|walk.?in|at the restaurant|no delivery|not delivery|not for delivery)\b/i.test(latestUserText)) {
+    orderExtracted.orderType = "dineIn";
+  } else if (/\b(pick.?up|collect|take.?away|takeaway|i'll come|come get)\b/i.test(latestUserText)) {
+    orderExtracted.orderType = "pickup";
+  } else if (/\b(deliver|delivery)\b/i.test(latestUserText) && !/\b(no delivery|not delivery|cancel delivery|change.*delivery|dine)\b/i.test(latestUserText)) {
+    orderExtracted.orderType = "delivery";
+  }
+}
 
     // Update booking draft
     if (extracted.partySize && !draft.partySize) draft.partySize = extracted.partySize;
