@@ -7,50 +7,29 @@ const Order = require("../models/Order");
 const { getAIResponse } = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
-// ─── PROPER MUTEX LOCK ────────────────────────────────────────────────────────
-// A call is either being processed or it isn't. No timestamps — no race gaps.
-const processingLocks = new Set(); // callId -> currently processing
+// ─── PER-CALL PROCESSING LOCK ─────────────────────────────────────────────────
+const activeCallProcessing = new Map();
 
-// ─── CONTENT DEDUPLICATION ───────────────────────────────────────────────────
-// Prevents processing the same message twice even if Retell sends it > 300ms apart
-const lastProcessedText = new Map(); // callId -> { text, ts }
-
-function isDuplicateMessage(callId, text) {
-  const entry = lastProcessedText.get(callId);
-  if (!entry) return false;
-  if (entry.text === text && Date.now() - entry.ts < 5000) return true;
-  return false;
+function acquireLock(callId) {
+  const now = Date.now();
+  const last = activeCallProcessing.get(callId);
+  if (last && now - last < 300) return false;
+  activeCallProcessing.set(callId, now);
+  return true;
 }
 
-function markProcessed(callId, text) {
-  lastProcessedText.set(callId, { text, ts: Date.now() });
+function releaseLock(callId) {
+  activeCallProcessing.delete(callId);
 }
 
-// ─── AGENT CACHE (per callId, lives for the duration of the call) ─────────────
-// Prevents hitting MongoDB on every single message for data that never changes
-const agentCache = new Map(); // callId -> { agent, ts }
-const AGENT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
-
-async function getCachedAgent(agentId, callId) {
-  const cached = agentCache.get(callId);
-  if (cached && Date.now() - cached.ts < AGENT_CACHE_TTL) return cached.agent;
-  const agent = await Agent.findById(agentId).lean();
-  if (agent) agentCache.set(callId, { agent, ts: Date.now() });
-  return agent;
-}
-
-// Cleanup stale cache entries every 15 minutes
 setInterval(() => {
   const now = Date.now();
-  for (const [id, entry] of agentCache.entries()) {
-    if (now - entry.ts > AGENT_CACHE_TTL) agentCache.delete(id);
+  for (const [id, ts] of activeCallProcessing.entries()) {
+    if (now - ts > 10000) activeCallProcessing.delete(id);
   }
-  for (const [id, entry] of lastProcessedText.entries()) {
-    if (now - entry.ts > 60000) lastProcessedText.delete(id);
-  }
-}, 15 * 60 * 1000);
+}, 30000);
 
-// ─── HELPERS ────────────────────────────────────────────────────────────────
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function formatMenu(menu) {
   if (!menu || menu.length === 0) return "No menu available.";
@@ -106,6 +85,8 @@ function buildSystemPrompt(agent) {
 
 You can help customers with: ${features.join(", ") || "general inquiries"}.
 
+LANGUAGE RULE: Always respond in the same language the customer is speaking. If the customer uses any Arabic words or speaks Arabic, respond fully in Arabic. If the customer speaks only English, respond in English. Never mix languages in your response.
+
 Opening Hours:
 ${formatOpeningHours(agent.openingHours)}
 
@@ -128,7 +109,6 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
 
   const hasOrders = agent.features?.orders === true;
 
-  // Only keep the last 4 turns to reduce token cost and latency
   const recentConvo = (transcript ?? [])
     .slice(-4)
     .map(t => `${t.role === "agent" ? "Agent" : "Customer"}: ${t.content}`)
@@ -155,21 +135,23 @@ ${recentConvo}
 Customer just said: "${text}"
 
 STRICT RULES:
-- If customer mentions the order type in their message (e.g. "order for dine in", "pickup order", "delivery order"), extract it immediately. ONLY ask "Would you like delivery, pickup, or dine-in?" if the customer did NOT mention the order type.
-- NEVER set orderType to dineIn just because customer wants to book a table. orderType dineIn is ONLY when customer explicitly orders food to eat inside. Booking a table is NOT an order.
+- If the customer says "book a table", "reserve a table", or similar with NO food items mentioned, this is BOOKING ONLY. Do NOT ask about order type. Do NOT ask if they want food. Just collect partySize, time, and name.
+- NEVER ask "Would you like delivery, pickup, or dine-in?" during a booking-only flow where no food was mentioned.
+- If customer explicitly mentions wanting to ORDER food and does NOT mention order type, THEN ask "Would you like delivery, pickup, or dine-in?"
+- NEVER set orderType to dineIn just because customer wants to book a table. orderType dineIn is ONLY when customer explicitly orders food to eat inside.
 - If customer says "book a table" or "reserve a table" with no food items, leave orderType as null.
 - For pickup: collect items first, then time, then name. NEVER ask address or party size.
 - For delivery: collect items first, then address, then name. NEVER ask party size.
-- For dineIn: collect items, how many people, time, and name. NEVER assume partySize from the quantity of food items ordered. Always ask separately how many people will be dining.
+- For dineIn orders: collect items, how many people, time, and name. NEVER assume partySize from food quantity. Always ask separately how many people will be dining.
 - NEVER say "party size" — say "how many people" instead.
 - Never ask for phone number or date.
 - Keep responses short and warm.
 - Always respond in the same language the customer is speaking. If the customer uses any Arabic words or speaks Arabic, respond fully in Arabic. If the customer speaks only English, respond in English. Never mix languages in your response.
 - If customer corrects their name, use the corrected name.
-- For delivery address: extract ONLY meaningful location info. Remove filler words like "uh", "um", "it's in", "the building name is". Only include parts customer actually mentioned. Never include "null" in address.
+- For delivery address: extract ONLY meaningful location info. Remove filler words like "uh", "um", "it's in". Never include "null" in address.
 - If customer wants to CANCEL booking or order, set intent to "cancel".
 - If customer wants to MODIFY booking or order, set intent to "modify".
-- If all required info collected, return null for response.
+- If all required info is collected, return null for response.
 
 Respond ONLY with valid JSON (no markdown):
 {
@@ -189,7 +171,7 @@ Respond ONLY with valid JSON (no markdown):
       body: JSON.stringify({
         model: "gpt-4o-mini",
         max_tokens: 200,
-        temperature: 0.3,
+        temperature: 0.2,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -207,7 +189,7 @@ Respond ONLY with valid JSON (no markdown):
       response: parsed.response ?? null,
     };
   } catch (err) {
-    console.error("❌ OpenAI extraction error:", err.message);
+    console.error("❌ OpenAI error:", err.message);
     return { extracted: {}, orderExtracted: {}, response: null, intent: null };
   }
 }
@@ -234,17 +216,10 @@ function looksLikeModifyIntent(text) {
   return /\b(change|modify|update|edit|make it|instead|switch|different|wrong|correct|fix)\b/i.test(text);
 }
 
-function looksLikeGoodbye(text) {
-  if (!text) return false;
-  return /\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(text);
-}
+// ─── BOOKING ENGINE LOCK ──────────────────────────────────────────────────────
+const processingCalls = new Set();
 
-function looksLikeGreeting(text) {
-  if (!text) return false;
-  return /^(hi|hello|hey|good morning|good evening|good afternoon|howdy|greetings)[\s\?\!\.]*$/i.test(text.trim());
-}
-
-// ─── MAIN ENTRY POINT ────────────────────────────────────────────────────────
+// ─── MAIN ────────────────────────────────────────────────────────────────────
 
 async function processLLMMessage(body, req) {
   console.log("🎯 WEBSOCKET LLM CONTROLLER HIT");
@@ -253,7 +228,6 @@ async function processLLMMessage(body, req) {
   if (interactionType === "ping_pong") return null;
   if (interactionType !== "response_required") return null;
 
-  // ── CALL ID ──────────────────────────────────────────────
   let callId = body.call_id || body.callId || body?.metadata?.call_id || null;
   if (!callId && req?.url) {
     const parts = req.url.split("/");
@@ -262,41 +236,19 @@ async function processLLMMessage(body, req) {
   }
   if (!callId) return { response: "Sorry, something went wrong." };
 
-  const latestUserText = typeof body.latest_user_text === "string"
-    ? body.latest_user_text.trim() : "";
-
-  // ── CONTENT-BASED DEDUPLICATION ──────────────────────────
-  // Catches duplicates that arrive after the 300ms window
-  if (latestUserText && isDuplicateMessage(callId, latestUserText)) {
-    console.log(`⏭ Skipping duplicate message for call: ${callId} — "${latestUserText}"`);
+  if (!acquireLock(callId)) {
+    console.log(`⏭ Skipping duplicate request for call: ${callId}`);
     return null;
   }
-
-  // ── MUTEX LOCK — one message at a time per call ──────────
-  if (processingLocks.has(callId)) {
-    console.log(`⏭ Call ${callId} already processing, dropping duplicate`);
-    return null;
-  }
-
-  processingLocks.add(callId);
-  if (latestUserText) markProcessed(callId, latestUserText);
 
   try {
-    return await _processMessage(body, req, callId, latestUserText);
+    return await _processMessage(body, req, callId);
   } finally {
-    processingLocks.delete(callId);
+    releaseLock(callId);
   }
 }
 
-async function _processMessage(body, req, callId, latestUserText) {
-
-  const transcript = body.transcript ?? [];
-  console.log(`🗣 User: ${latestUserText}`);
-
-  // ── FAST PATH: goodbye ───────────────────────────────────
-  if (looksLikeGoodbye(latestUserText)) {
-    return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
-  }
+async function _processMessage(body, req, callId) {
 
   // ── LOAD CALL ────────────────────────────────────────────
   const freshCall = await Call.findOne({
@@ -304,11 +256,11 @@ async function _processMessage(body, req, callId, latestUserText) {
   }).lean();
   if (!freshCall) return { response: "Sorry, something went wrong." };
 
-  // ── LOAD AGENT (cached) ───────────────────────────────────
-  const agent = await getCachedAgent(freshCall.agentId, callId);
+  // ── LOAD AGENT ───────────────────────────────────────────
+  const agent = await Agent.findById(freshCall.agentId).lean();
   if (!agent) return { response: "Sorry, something went wrong." };
 
-  // ── PHONE NUMBER — fire-and-forget update ─────────────────
+  // ── PHONE NUMBER ─────────────────────────────────────────
   const phoneFromBody =
     body?.call?.from_number || body?.call?.caller_id ||
     body?.call?.from || body?.call?.customer_number || body?.from_number || null;
@@ -316,19 +268,14 @@ async function _processMessage(body, req, callId, latestUserText) {
   const callerPhone = freshCall.callerNumber || phoneFromBody || null;
 
   if (!freshCall.callerNumber && phoneFromBody) {
-    // Non-blocking — don't await, not on the critical path
-    Call.updateOne({ _id: freshCall._id }, { $set: { callerNumber: phoneFromBody } }).catch(() => {});
+    await Call.updateOne({ _id: freshCall._id }, { $set: { callerNumber: phoneFromBody } });
   }
 
-  // ── FAST PATH: simple greeting (no active draft) ──────────
-  const hasActiveDraftQuick = freshCall.orderDraft?.items?.length > 0
-    || freshCall.orderDraft?.orderType
-    || freshCall.bookingDraft?.partySize
-    || freshCall.bookingDraft?.requestedStart;
-
-  if (looksLikeGreeting(latestUserText) && !hasActiveDraftQuick) {
-    return { response: "How can I help you today?" };
-  }
+  // ── USER TEXT ────────────────────────────────────────────
+  const latestUserText = typeof body.latest_user_text === "string"
+    ? body.latest_user_text.trim() : "";
+  const transcript = body.transcript ?? [];
+  console.log(`🗣 User: ${latestUserText}`);
 
   // ── DRAFT STATE ──────────────────────────────────────────
   let draft = {
@@ -371,7 +318,6 @@ async function _processMessage(body, req, callId, latestUserText) {
   let returnConfirmed = freshCall.meta?.returnConfirmed ?? false;
 
   const mentionsChange = /\b(cancel|change|modify|update|edit|fix|correct|i called|earlier|last time|my order|my booking|placed an order|made a booking)\b/i.test(latestUserText);
-
   const hasActiveDraft = orderDraft.items?.length > 0 || orderDraft.orderType || draft.partySize || draft.requestedStart;
 
   if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed && !hasActiveDraft) {
@@ -382,11 +328,8 @@ async function _processMessage(body, req, callId, latestUserText) {
     }).sort({ createdAt: -1 }).lean();
 
     if (previousCall) {
-      // Parallel lookup for booking and order
-      const [prevBooking, prevOrder] = await Promise.all([
-        Booking.findOne({ callId: previousCall.callId, status: { $in: ["confirmed","seated"] } }).lean(),
-        Order.findOne({ callId: previousCall.callId, status: { $in: ["confirmed","preparing","ready"] } }).lean(),
-      ]);
+      const prevBooking = await Booking.findOne({ callId: previousCall.callId, status: { $in: ["confirmed","seated"] } }).lean();
+      const prevOrder = await Order.findOne({ callId: previousCall.callId, status: { $in: ["confirmed","preparing","ready"] } }).lean();
 
       if (prevBooking || prevOrder) {
         const name = prevBooking?.customerName || prevOrder?.customerName;
@@ -396,7 +339,15 @@ async function _processMessage(body, req, callId, latestUserText) {
             returningContext = `Booking for ${prevBooking.partySize} people at ${timeStr} under ${name}`;
           } else if (prevOrder) {
             const itemsSummary = prevOrder.items.map(i => `${i.name} x${i.quantity}`).join(", ");
-            returningContext = `${prevOrder.orderType} order: ${itemsSummary} under ${name}`;
+            const statusMap = {
+              confirmed: "received and confirmed",
+              preparing: "currently being prepared",
+              ready: "ready for pickup",
+              delivered: "delivered",
+              cancelled: "cancelled",
+            };
+            const statusMsg = statusMap[prevOrder.status] || prevOrder.status;
+            returningContext = `${prevOrder.orderType} order: ${itemsSummary} under ${name} — status: ${statusMsg}`;
           }
 
           await Call.updateOne({ _id: freshCall._id }, {
@@ -426,30 +377,46 @@ async function _processMessage(body, req, callId, latestUserText) {
       const returningOrderId = freshCall.meta?.returningOrderId;
 
       draft.customerName = returningName;
-
-      // Parallel: update call + load booking/order details
-      const [, rb, ro] = await Promise.all([
-        Call.updateOne({ _id: freshCall._id }, {
-          $set: { "meta.returnConfirmed": true, "meta.awaitingReturnConfirmation": false, "bookingDraft.customerName": returningName }
-        }),
-        returningBookingId ? Booking.findById(returningBookingId).lean() : Promise.resolve(null),
-        returningOrderId && !returningBookingId ? Order.findById(returningOrderId).lean() : Promise.resolve(null),
-      ]);
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: {
+          "meta.returnConfirmed": true,
+          "meta.awaitingReturnConfirmation": false,
+          "bookingDraft.customerName": returningName,
+        }
+      });
 
       let contextMsg = "";
-      if (rb) {
-        const timeStr = new Date(rb.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
-        contextMsg = `I have your table booking for ${rb.partySize} at ${timeStr}.`;
-      } else if (ro) {
-        const itemsSummary = ro.items.map(i => `${i.name} x${i.quantity}`).join(", ");
-        contextMsg = `I have your ${ro.orderType} order for ${itemsSummary}.`;
+      if (returningBookingId) {
+        const rb = await Booking.findById(returningBookingId).lean();
+        if (rb) {
+          const timeStr = new Date(rb.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          contextMsg = `I have your table booking for ${rb.partySize} at ${timeStr}.`;
+        }
+      }
+      if (!contextMsg && returningOrderId) {
+        const ro = await Order.findById(returningOrderId).lean();
+        if (ro) {
+          const itemsSummary = ro.items.map(i => `${i.name} x${i.quantity}`).join(", ");
+          const statusMap = {
+            confirmed: "received and confirmed",
+            preparing: "currently being prepared",
+            ready: "ready for pickup",
+            delivered: "delivered",
+            cancelled: "cancelled",
+          };
+          const statusMsg = statusMap[ro.status] || ro.status;
+          contextMsg = `I have your ${ro.orderType} order for ${itemsSummary} — it's currently ${statusMsg}.`;
+        }
       }
       return { response: `Great! ${contextMsg} How can I help you?` };
     }
 
     if (isNo) {
       await Call.updateOne({ _id: freshCall._id }, {
-        $set: { "meta.awaitingReturnConfirmation": false, "meta.returnConfirmed": false }
+        $set: {
+          "meta.awaitingReturnConfirmation": false,
+          "meta.returnConfirmed": false,
+        }
       });
       return { response: "I'm sorry about that! How can I help you today?" };
     }
@@ -470,12 +437,14 @@ async function _processMessage(body, req, callId, latestUserText) {
   const bookingFlowActive =
     !!draft.partySize || !!draft.requestedStart ||
     (!returnConfirmed && !!draft.customerName) ||
-    looksLikeBookingIntent(latestUserText) || looksLikeBookingIntent(recentTranscriptText);
+    looksLikeBookingIntent(latestUserText) ||
+    looksLikeBookingIntent(recentTranscriptText);
 
   const orderFlowActive =
     agent.features?.orders === true && (
       !!orderDraft.items?.length || !!orderDraft.orderType ||
-      looksLikeOrderIntent(latestUserText) || looksLikeOrderIntent(recentTranscriptText)
+      looksLikeOrderIntent(latestUserText) ||
+      looksLikeOrderIntent(recentTranscriptText)
     );
 
   // ── CANCEL — RETURNING CALLER ─────────────────────────────
@@ -485,11 +454,16 @@ async function _processMessage(body, req, callId, latestUserText) {
     if (confirmedBookingId && (wantsToCancel.includes("book") || wantsToCancel.includes("reserv") || wantsToCancel.includes("table") || !wantsToCancel.includes("order"))) {
       const booking = await Booking.findById(confirmedBookingId);
       if (booking) {
-        await Promise.all([
-          Booking.updateOne({ _id: confirmedBookingId }, { $set: { status: "cancelled" } }),
-          Call.updateOne({ _id: freshCall._id }, { $set: { "meta.returningBookingId": null, "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null } }),
-        ]);
-        return { response: `Done! Your booking has been cancelled. Is there anything else I can help you with?` };
+        await Booking.updateOne({ _id: confirmedBookingId }, { $set: { status: "cancelled" } });
+        await Call.updateOne({ _id: freshCall._id }, {
+          $set: {
+            "meta.returningBookingId": null,
+            "bookingDraft.partySize": null,
+            "bookingDraft.requestedStart": null,
+            "bookingDraft.customerName": null,
+          }
+        });
+        return { response: "Done! Your booking has been cancelled. Is there anything else I can help you with?" };
       }
     }
 
@@ -498,11 +472,17 @@ async function _processMessage(body, req, callId, latestUserText) {
       if (order) {
         const mins = (Date.now() - new Date(order.createdAt).getTime()) / 60000;
         if (mins > 5) return { response: `I'm sorry, your order was placed ${Math.floor(mins)} minutes ago and cannot be cancelled.` };
-        await Promise.all([
-          Order.updateOne({ _id: confirmedOrderId }, { $set: { status: "cancelled" } }),
-          Call.updateOne({ _id: freshCall._id }, { $set: { "meta.returningOrderId": null, "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.status": null, "orderDraft.deliveryAddress": null } }),
-        ]);
-        return { response: `Done! Your order has been cancelled. Is there anything else I can help you with?` };
+        await Order.updateOne({ _id: confirmedOrderId }, { $set: { status: "cancelled" } });
+        await Call.updateOne({ _id: freshCall._id }, {
+          $set: {
+            "meta.returningOrderId": null,
+            "orderDraft.items": [],
+            "orderDraft.orderType": null,
+            "orderDraft.status": null,
+            "orderDraft.deliveryAddress": null,
+          }
+        });
+        return { response: "Done! Your order has been cancelled. Is there anything else I can help you with?" };
       }
     }
   }
@@ -513,10 +493,15 @@ async function _processMessage(body, req, callId, latestUserText) {
     if (existingOrder) {
       const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
       if (mins > 5) return { response: `I'm sorry, your order was placed ${Math.floor(mins)} minutes ago and cannot be cancelled.` };
-      await Promise.all([
-        Order.updateOne({ _id: existingOrder._id }, { $set: { status: "cancelled" } }),
-        Call.updateOne({ _id: freshCall._id }, { $set: { "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.status": "cancelled", "orderDraft.deliveryAddress": null } }),
-      ]);
+      await Order.updateOne({ _id: existingOrder._id }, { $set: { status: "cancelled" } });
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: {
+          "orderDraft.items": [],
+          "orderDraft.orderType": null,
+          "orderDraft.status": "cancelled",
+          "orderDraft.deliveryAddress": null,
+        }
+      });
       return { response: "Done! Your order has been cancelled. Is there anything else I can help you with?" };
     }
   }
@@ -524,10 +509,14 @@ async function _processMessage(body, req, callId, latestUserText) {
   if (cancelIntent && (bookingFlowActive || looksLikeBookingIntent(latestUserText))) {
     const existingBooking = await Booking.findOne({ callId, status: { $in: ["confirmed","seated"] } });
     if (existingBooking) {
-      await Promise.all([
-        Booking.updateOne({ _id: existingBooking._id }, { $set: { status: "cancelled" } }),
-        Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null } }),
-      ]);
+      await Booking.updateOne({ _id: existingBooking._id }, { $set: { status: "cancelled" } });
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: {
+          "bookingDraft.partySize": null,
+          "bookingDraft.requestedStart": null,
+          "bookingDraft.customerName": null,
+        }
+      });
       return { response: "Done! Your booking has been cancelled. Is there anything else I can help you with?" };
     }
   }
@@ -543,19 +532,31 @@ async function _processMessage(body, req, callId, latestUserText) {
       orderDraft.deliveryAddress = existingOrder.deliveryAddress;
       orderDraft.status = null;
       await Call.updateOne({ _id: freshCall._id }, {
-        $set: { "orderDraft.items": existingOrder.items, "orderDraft.orderType": existingOrder.orderType, "orderDraft.deliveryAddress": existingOrder.deliveryAddress, "orderDraft.status": null }
+        $set: {
+          "orderDraft.items": existingOrder.items,
+          "orderDraft.orderType": existingOrder.orderType,
+          "orderDraft.deliveryAddress": existingOrder.deliveryAddress,
+          "orderDraft.status": null,
+        }
       });
     }
   }
 
   // ── ORDER CONFIRMED — handle next action ──────────────────
   if (orderDraft.status === "confirmed") {
-    if (looksLikeGoodbye(latestUserText)) {
+    if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
       return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
     }
     if (looksLikeOrderIntent(latestUserText) && !modifyIntent && !cancelIntent) {
       orderDraft = { items: [], orderType: null, status: null, deliveryAddress: null };
-      await Call.updateOne({ _id: freshCall._id }, { $set: { "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.status": null, "orderDraft.deliveryAddress": null } });
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: {
+          "orderDraft.items": [],
+          "orderDraft.orderType": null,
+          "orderDraft.status": null,
+          "orderDraft.deliveryAddress": null,
+        }
+      });
     } else if (looksLikeBookingIntent(latestUserText)) {
       // fall through to booking flow
     } else if (modifyIntent || cancelIntent) {
@@ -569,7 +570,12 @@ async function _processMessage(body, req, callId, latestUserText) {
         orderDraft.deliveryAddress = mentionsAddress ? null : existingOrder.deliveryAddress;
         orderDraft.status = null;
         await Call.updateOne({ _id: freshCall._id }, {
-          $set: { "orderDraft.items": existingOrder.items, "orderDraft.orderType": existingOrder.orderType, "orderDraft.deliveryAddress": mentionsAddress ? null : existingOrder.deliveryAddress, "orderDraft.status": null }
+          $set: {
+            "orderDraft.items": existingOrder.items,
+            "orderDraft.orderType": existingOrder.orderType,
+            "orderDraft.deliveryAddress": mentionsAddress ? null : existingOrder.deliveryAddress,
+            "orderDraft.status": null,
+          }
         });
         if (mentionsAddress) return { response: "Sure! What is the new delivery address?" };
       }
@@ -581,7 +587,7 @@ async function _processMessage(body, req, callId, latestUserText) {
   // ── ACTIVE FLOW ───────────────────────────────────────────
   if (bookingFlowActive || orderFlowActive || cancelIntent || modifyIntent) {
 
-    if (looksLikeGoodbye(latestUserText)) {
+    if (/\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(latestUserText)) {
       return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
     }
 
@@ -631,7 +637,7 @@ async function _processMessage(body, req, callId, latestUserText) {
     if (orderExtracted.orderType) orderDraft.orderType = orderExtracted.orderType;
     if (orderExtracted.deliveryAddress) orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
 
-    // Save drafts to DB
+    // Save drafts
     await Call.updateOne({ _id: freshCall._id }, {
       $set: {
         "bookingDraft.partySize":      draft.partySize,
@@ -683,6 +689,8 @@ async function _processMessage(body, req, callId, latestUserText) {
 
     // ── DINE-IN ───────────────────────────────────────────
     if (dineInComplete) {
+      if (processingCalls.has(callId)) return { response: "One moment please..." };
+      processingCalls.add(callId);
       try {
         const existingOrder = confirmedOrderId ? await Order.findById(confirmedOrderId) : null;
         const total = orderDraft.items.reduce((sum, item) => {
@@ -701,22 +709,47 @@ async function _processMessage(body, req, callId, latestUserText) {
         const existingBooking = await Booking.findOne({ callId, status: { $in: ["confirmed","seated"] } });
         const result = existingBooking
           ? { success: true, booking: { startIso: existingBooking.startTime } }
-          : await findNearestAvailableSlot({ businessId: agent.businessId, requestedStart: draft.requestedStart, durationMinutes: 90, partySize: draft.partySize, source: "ai", agentId: agent._id, callId, customerName: draft.customerName, customerPhone: draft.customerPhone });
+          : await findNearestAvailableSlot({
+              businessId: agent.businessId,
+              requestedStart: draft.requestedStart,
+              durationMinutes: 90,
+              partySize: draft.partySize,
+              source: "ai",
+              agentId: agent._id,
+              callId,
+              customerName: draft.customerName,
+              customerPhone: draft.customerPhone,
+            });
 
         if (existingBooking) {
           await Booking.updateOne({ _id: existingBooking._id }, { $set: { partySize: draft.partySize, startTime: draft.requestedStart } });
         }
 
         if (result?.success) {
-          const orderCreatePromise = existingOrder ? Promise.resolve() : Order.create({
-            callId, businessId: agent.businessId, agentId: agent._id,
-            customerName: draft.customerName, customerPhone: draft.customerPhone || callerPhone,
-            items: orderItems, orderType: "dineIn", total, status: "confirmed"
+          if (!existingOrder) {
+            await Order.create({
+              callId,
+              businessId: agent.businessId,
+              agentId: agent._id,
+              customerName: draft.customerName,
+              customerPhone: draft.customerPhone || callerPhone,
+              items: orderItems,
+              orderType: "dineIn",
+              total,
+              status: "confirmed",
+            });
+          }
+          await Call.updateOne({ _id: freshCall._id }, {
+            $set: {
+              "bookingDraft.partySize": null,
+              "bookingDraft.requestedStart": null,
+              "bookingDraft.customerName": null,
+              "orderDraft.items": [],
+              "orderDraft.orderType": null,
+              "orderDraft.deliveryAddress": null,
+              "orderDraft.status": "confirmed",
+            }
           });
-          await Promise.all([
-            orderCreatePromise,
-            Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null, "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.deliveryAddress": null, "orderDraft.status": "confirmed" } }),
-          ]);
           const timeString = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
           const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
           console.log("✅ Dine-in confirmed");
@@ -730,11 +763,15 @@ async function _processMessage(body, req, callId, latestUserText) {
       } catch (err) {
         console.error("❌ Dine-in error:", err.message);
         return { response: "Something went wrong. Please try again." };
+      } finally {
+        processingCalls.delete(callId);
       }
     }
 
     // ── BOOKING ONLY ──────────────────────────────────────
     if (bookingComplete) {
+      if (processingCalls.has(callId)) return { response: "One moment please..." };
+      processingCalls.add(callId);
       try {
         const existingBooking = await Booking.findOne({
           $or: [
@@ -744,19 +781,45 @@ async function _processMessage(body, req, callId, latestUserText) {
         });
 
         if (existingBooking) {
-          await Promise.all([
-            Booking.updateOne({ _id: existingBooking._id }, { $set: { partySize: draft.partySize, startTime: draft.requestedStart, customerName: draft.customerName } }),
-            Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null } }),
-          ]);
+          await Booking.updateOne({ _id: existingBooking._id }, {
+            $set: {
+              partySize: draft.partySize,
+              startTime: draft.requestedStart,
+              customerName: draft.customerName,
+            }
+          });
+          await Call.updateOne({ _id: freshCall._id }, {
+            $set: {
+              "bookingDraft.partySize": null,
+              "bookingDraft.requestedStart": null,
+              "bookingDraft.customerName": null,
+            }
+          });
           const timeString = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
           console.log("✅ Booking updated");
           return { response: `Done! Your booking has been updated to ${draft.partySize} people at ${timeString} under ${draft.customerName}. Is there anything else I can help you with?` };
         }
 
-        const result = await findNearestAvailableSlot({ businessId: agent.businessId, requestedStart: draft.requestedStart, durationMinutes: 90, partySize: draft.partySize, source: "ai", agentId: agent._id, callId, customerName: draft.customerName, customerPhone: draft.customerPhone });
+        const result = await findNearestAvailableSlot({
+          businessId: agent.businessId,
+          requestedStart: draft.requestedStart,
+          durationMinutes: 90,
+          partySize: draft.partySize,
+          source: "ai",
+          agentId: agent._id,
+          callId,
+          customerName: draft.customerName,
+          customerPhone: draft.customerPhone,
+        });
 
         if (result?.success && result.booking) {
-          await Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.partySize": null, "bookingDraft.requestedStart": null, "bookingDraft.customerName": null } });
+          await Call.updateOne({ _id: freshCall._id }, {
+            $set: {
+              "bookingDraft.partySize": null,
+              "bookingDraft.requestedStart": null,
+              "bookingDraft.customerName": null,
+            }
+          });
           const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
           console.log("✅ Booking confirmed");
           return { response: `Perfect! Your table for ${draft.partySize} is confirmed at ${timeString} under ${draft.customerName}. Is there anything else I can help you with?` };
@@ -769,6 +832,8 @@ async function _processMessage(body, req, callId, latestUserText) {
       } catch (err) {
         console.error("❌ Booking error:", err.message);
         return { response: "Something went wrong. Please try again." };
+      } finally {
+        processingCalls.delete(callId);
       }
     }
 
@@ -787,31 +852,72 @@ async function _processMessage(body, req, callId, latestUserText) {
 
       if (existingOrder) {
         const updatedAddress = orderDraft.deliveryAddress || existingOrder.deliveryAddress;
-        await Order.updateOne({ _id: existingOrder._id }, { $set: { items: orderItems, deliveryAddress: updatedAddress, orderType: orderDraft.orderType, customerName: draft.customerName, total, status: "confirmed" } });
+        await Order.updateOne({ _id: existingOrder._id }, {
+          $set: {
+            items: orderItems,
+            deliveryAddress: updatedAddress,
+            orderType: orderDraft.orderType,
+            customerName: draft.customerName,
+            total,
+            status: "confirmed",
+          }
+        });
         orderDraft.deliveryAddress = updatedAddress;
         console.log("✅ Order updated:", orderDraft.orderType);
       } else {
-        // Race-condition guard: check if a parallel request already saved the order
-        const raceCheck = await Order.findOne({ callId, orderType: orderDraft.orderType, status: "confirmed", createdAt: { $gte: new Date(Date.now() - 5000) } });
-        if (!raceCheck) {
-          await Order.create({ callId, businessId: agent.businessId, agentId: agent._id, customerName: draft.customerName, customerPhone: draft.customerPhone || callerPhone, deliveryAddress: orderDraft.deliveryAddress || null, items: orderItems, orderType: orderDraft.orderType, scheduledTime: draft.requestedStart || null, total, status: "confirmed" });
-          console.log("✅ Order saved:", orderDraft.orderType);
-        } else {
-          console.log("⏭ Order already saved by earlier request, skipping duplicate save");
+        const raceCheck = await Order.findOne({
+          callId,
+          orderType: orderDraft.orderType,
+          status: "confirmed",
+          createdAt: { $gte: new Date(Date.now() - 5000) },
+        });
+        if (raceCheck) {
+          console.log("⏭ Order already saved by parallel request, skipping");
+          const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
+          const confirmMsg = orderDraft.orderType === "delivery"
+            ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
+            : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}${draft.requestedStart ? ` at ${new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}. Total is ${total} AED. Is there anything else I can help you with?`;
+          return { response: confirmMsg };
         }
+        await Order.create({
+          callId,
+          businessId: agent.businessId,
+          agentId: agent._id,
+          customerName: draft.customerName,
+          customerPhone: draft.customerPhone || callerPhone,
+          deliveryAddress: orderDraft.deliveryAddress || null,
+          items: orderItems,
+          orderType: orderDraft.orderType,
+          scheduledTime: draft.requestedStart || null,
+          total,
+          status: "confirmed",
+        });
+        console.log("✅ Order saved:", orderDraft.orderType);
       }
 
-      await Call.updateOne({ _id: freshCall._id }, { $set: { "orderDraft.items": [], "orderDraft.orderType": null, "orderDraft.deliveryAddress": null, "orderDraft.status": "confirmed" } });
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: {
+          "orderDraft.items": [],
+          "orderDraft.orderType": null,
+          "orderDraft.deliveryAddress": null,
+          "orderDraft.status": "confirmed",
+        }
+      });
 
       const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
       const confirmMsg = orderDraft.orderType === "delivery"
         ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
         : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}${draft.requestedStart ? ` at ${new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}. Total is ${total} AED. Is there anything else I can help you with?`;
 
+      orderDraft.items = [];
+      orderDraft.orderType = null;
+      orderDraft.deliveryAddress = null;
+      orderDraft.status = "confirmed";
+
       return { response: confirmMsg };
     }
 
-    // ── FALLBACK WITH CONTEXT-AWARE HINTS ─────────────────
+    // ── FALLBACK HINTS ────────────────────────────────────
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress) {
       return { response: "What is the delivery address?" };
     }
@@ -827,10 +933,24 @@ async function _processMessage(body, req, callId, latestUserText) {
     if (orderDraft.orderType === "dineIn" && orderDraft.items?.length > 0 && draft.partySize && draft.requestedStart && !draft.customerName) {
       return { response: "What name should I put the reservation under?" };
     }
+    if (bookingFlowActive && !orderFlowActive && draft.partySize && draft.requestedStart && !draft.customerName) {
+      return { response: "What name should I put the booking under?" };
+    }
+
     return { response: aiResponse || "How can I help you?" };
   }
 
+  // ── GOODBYE ───────────────────────────────────────────────
+  if (/\b(bye|goodbye|thank you|thanks|that's all|nothing else|no thank|bye bye)\b/i.test(latestUserText)) {
+    return { response: "Thank you for calling! Have a wonderful day. Goodbye!", end_call: true };
+  }
+
   // ── GENERAL FALLBACK ──────────────────────────────────────
+  const isJustGreeting = /^(hi|hello|hey|good morning|good evening|good afternoon|howdy|greetings)[\s\?\!\.]*$/i.test(latestUserText.trim());
+  if (isJustGreeting && !orderDraft.items?.length && !orderDraft.orderType && !draft.partySize) {
+    return { response: "How can I help you today?" };
+  }
+
   const systemPrompt = buildSystemPrompt(agent);
   const conversationHistory = transcript.slice(-6).map(t => ({
     role: t.role === "agent" ? "assistant" : "user",
