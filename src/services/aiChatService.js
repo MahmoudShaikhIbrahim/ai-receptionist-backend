@@ -5,10 +5,10 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 async function getAIResponse(messages) {
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages,
       temperature: 0.4,
-      max_tokens: 100,
+      max_tokens: 400,
     });
     return completion.choices?.[0]?.message?.content?.trim() || "";
   } catch (error) {

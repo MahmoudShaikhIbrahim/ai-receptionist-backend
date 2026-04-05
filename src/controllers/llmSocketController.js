@@ -177,8 +177,8 @@ Respond ONLY with valid JSON (no markdown):
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        max_tokens: 200,
+        model: "gpt-4o",
+        max_tokens: 400,
         temperature: 0.2,
         messages: [{ role: "user", content: prompt }],
       }),
@@ -302,12 +302,16 @@ async function _processMessage(body, req, callId) {
 
   // ── BOOKING INTENT RESET ─────────────────────────────────
   if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserText)) {
-    orderDraft.orderType = null;
-    orderDraft.status = null;
-    if (orderDraft.items?.length === 0) {
-      draft.requestedStart = null;
-      draft.partySize = null;
-    }
+  orderDraft.orderType = null;
+  orderDraft.status = null;
+  // Always clear items when switching to pure booking flow
+  if (orderDraft.items?.length > 0 && orderDraft.status !== "confirmed") {
+    orderDraft.items = [];
+  }
+  if (orderDraft.items?.length === 0) {
+    draft.requestedStart = null;
+    draft.partySize = null;
+  }
     await Call.updateOne({ _id: freshCall._id }, {
       $set: {
         "orderDraft.orderType": null,
@@ -327,8 +331,10 @@ async function _processMessage(body, req, callId) {
 
   const mentionsChange = /\b(cancel|change|modify|update|edit|fix|correct|i called|i ordered|earlier|last time|my order|my booking|placed an order|made a booking|status|where is my|check my|track my|order status|what happened|how long|when will)\b/i.test(latestUserText);
   const hasActiveDraft = orderDraft.items?.length > 0 || orderDraft.orderType || draft.partySize || draft.requestedStart;
+  const justConfirmedBooking = await Booking.findOne({ callId, status: { $in: ["confirmed", "seated"] } }).lean();
+  const hasActiveDraftOrConfirmed = hasActiveDraft || !!justConfirmedBooking;
 
-  if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed && !hasActiveDraft) {
+  if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed && !hasActiveDraftOrConfirmed) {
     const previousCall = await Call.findOne({
       _id: { $ne: freshCall._id },
       $or: [{ callerNumber: callerPhone }, { "bookingDraft.customerPhone": callerPhone }],
@@ -528,6 +534,20 @@ async function _processMessage(body, req, callId) {
       return { response: "Done! Your booking has been cancelled. Is there anything else I can help you with?" };
     }
   }
+
+  // Handle booking name change specifically
+if (modifyIntent && returnConfirmed && confirmedBookingId) {
+  const wantsToChangeName = /\b(name|under|rename|call it|change.*name|name.*change)\b/i.test(latestUserText);
+  if (wantsToChangeName) {
+    const { extracted: nameExtracted } = await extractAndRespond(latestUserText, draft, orderDraft, transcript, agent, null);
+    if (nameExtracted.name) {
+      await Booking.updateOne({ _id: confirmedBookingId }, { $set: { customerName: nameExtracted.name } });
+      return { response: `Done! I've updated the booking name to ${nameExtracted.name}. Is there anything else I can help you with?` };
+    } else {
+      return { response: "What name would you like the booking under?" };
+    }
+  }
+}
 
   // ── MODIFY — RETURNING CALLER ─────────────────────────────
   if (modifyIntent && returnConfirmed && confirmedOrderId) {
@@ -1037,9 +1057,9 @@ if (!orderExtracted.orderType) {
     if (orderDraft.orderType === "dineIn" && orderDraft.items?.length > 0 && draft.partySize && draft.requestedStart && !draft.customerName) {
       return { response: "What name should I put the reservation under?" };
     }
-    if (bookingFlowActive && !orderFlowActive && draft.partySize && draft.requestedStart && !draft.customerName) {
-      return { response: "What name should I put the booking under?" };
-    }
+    if (bookingFlowActive && draft.partySize && draft.requestedStart && !draft.customerName && orderDraft.items?.length === 0) {
+  return { response: "What name should I put the booking under?" };
+}
     return { response: aiResponse || "How can I help you?" };
   }
 
