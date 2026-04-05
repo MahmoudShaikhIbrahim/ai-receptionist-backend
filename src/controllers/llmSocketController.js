@@ -121,7 +121,12 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
 
   const returningInfo = returningContext ? `Returning customer context: ${returningContext}` : "";
 
-  const prompt = `You are a receptionist at ${agent.businessName}.
+  const now = new Date();
+const currentTimeStr = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
+const currentHour24 = parseInt(now.toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: "Asia/Dubai" }));
+
+const prompt = `You are a receptionist at ${agent.businessName}.
+Current time in Dubai: ${currentTimeStr}
 
 Current state:
 - Booking: people=${currentDraft.partySize ?? "not collected"}, time=${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}) : "not collected"}, name=${currentDraft.customerName ?? "not collected"}
@@ -136,6 +141,7 @@ ${recentConvo}
 Customer just said: "${text}"
 
 STRICT RULES:
+- Current time is ${currentTimeStr}. When customer says "in X minutes", "in X hours", "after X minutes", calculate the actual time based on current Dubai time and return it in HH:MM 24hr format.
 - If the customer says "book a table", "reserve a table", or similar with NO food items mentioned, this is BOOKING ONLY. Do NOT ask about order type. Do NOT ask if they want food. Just collect partySize, time, and name.
 - NEVER ask "Would you like delivery, pickup, or dine-in?" during a booking-only flow where no food was mentioned.
 - ALWAYS extract orderType when customer mentions it in ANY form:
@@ -706,13 +712,19 @@ if (!orderExtracted.orderType) {
     // Update booking draft
     if (extracted.partySize && !draft.partySize) draft.partySize = extracted.partySize;
     if (extracted.time && !draft.requestedStart) {
-      try {
-        const [h, m] = extracted.time.split(":").map(Number);
-        const d = new Date();
-        d.setHours(h, m || 0, 0, 0);
-        draft.requestedStart = d;
-      } catch (e) { console.error("❌ Time parse:", e); }
-    }
+  try {
+    const [h, m] = extracted.time.split(":").map(Number);
+    // Create time in Dubai timezone
+    const now = new Date();
+    const dubaiOffset = 4 * 60; // UTC+4
+    const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const dubaiNow = new Date(utcMs + (dubaiOffset * 60000));
+    dubaiNow.setHours(h, m || 0, 0, 0);
+    // Convert back to UTC for storage
+    const utcTime = new Date(dubaiNow.getTime() - (dubaiOffset * 60000));
+    draft.requestedStart = utcTime;
+  } catch (e) { console.error("❌ Time parse:", e); }
+}
     if (extracted.name) draft.customerName = extracted.name;
 
     // Update order items
@@ -875,7 +887,7 @@ if (!orderExtracted.orderType) {
               "orderDraft.status": "confirmed",
             }
           });
-          const timeString = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          const timeString = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
           const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
           console.log("✅ Dine-in confirmed");
           return { response: `Perfect! Your table for ${draft.partySize} is booked at ${timeString} under ${draft.customerName}, and your ${itemsSummary} will be ready when you arrive. Total is ${total} AED. Is there anything else I can help you with?` };
@@ -920,7 +932,7 @@ if (!orderExtracted.orderType) {
               "bookingDraft.customerName": null,
             }
           });
-          const timeString = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          const timeString = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
           console.log("✅ Booking updated");
           return { response: `Done! Your booking has been updated to ${draft.partySize} people at ${timeString} under ${draft.customerName}. Is there anything else I can help you with?` };
         }
@@ -1001,7 +1013,7 @@ if (!orderExtracted.orderType) {
           const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
           const confirmMsg = orderDraft.orderType === "delivery"
             ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
-            : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}${draft.requestedStart ? ` at ${new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}. Total is ${total} AED. Is there anything else I can help you with?`;
+            : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}${draft.requestedStart ? ` at ${new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" })}` : ""}. Total is ${total} AED. Is there anything else I can help you with?`;
           return { response: confirmMsg };
         }
         await Order.create({
@@ -1025,7 +1037,7 @@ if (!orderExtracted.orderType) {
       const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
       const confirmMsg = orderDraft.orderType === "delivery"
         ? `Perfect! Your order for ${itemsSummary} will be delivered to ${orderDraft.deliveryAddress} under ${draft.customerName}. Total is ${total} AED. Is there anything else I can help you with?`
-        : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}${draft.requestedStart ? ` at ${new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}. Total is ${total} AED. Is there anything else I can help you with?`;
+        : `Perfect! Your order for ${itemsSummary} is ready for pickup under ${draft.customerName}${draft.requestedStart ? ` at ${new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" })}` : ""}. Total is ${total} AED. Is there anything else I can help you with?`;
 
       orderDraft.items = [];
       orderDraft.orderType = null;
