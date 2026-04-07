@@ -123,13 +123,12 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
 
   const now = new Date();
 const currentTimeStr = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
-const currentHour24 = parseInt(now.toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: "Asia/Dubai" }));
 
 const prompt = `You are a receptionist at ${agent.businessName}.
 Current time in Dubai: ${currentTimeStr}
 
 Current state:
-- Booking: people=${currentDraft.partySize ?? "not collected"}, time=${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}) : "not collected"}, name=${currentDraft.customerName ?? "not collected"}
+- Booking: people=${currentDraft.partySize ?? "not collected"}, time=${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true, timeZone: "Asia/Dubai"}) : "not collected"}, name=${currentDraft.customerName ?? "not collected"}
 - Order: items=${orderDraft.items?.length > 0 ? orderDraft.items.map(i=>`${i.name}x${i.quantity}`).join(",") : "none"}, type=${orderDraft.orderType ?? "not set"}, address=${orderDraft.deliveryAddress ?? "not collected"}
 ${returningInfo}
 
@@ -355,7 +354,7 @@ async function _processMessage(body, req, callId) {
         const name = prevBooking?.customerName || prevOrder?.customerName;
         if (name) {
           if (prevBooking) {
-            const timeStr = new Date(prevBooking.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+            const timeStr = new Date(prevBooking.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
             returningContext = `Booking for ${prevBooking.partySize} people at ${timeStr} under ${name}`;
           } else if (prevOrder) {
             const itemsSummary = prevOrder.items.map(i => `${i.name} x${i.quantity}`).join(", ");
@@ -409,7 +408,7 @@ async function _processMessage(body, req, callId) {
       if (returningBookingId) {
         const rb = await Booking.findById(returningBookingId).lean();
         if (rb) {
-          const timeStr = new Date(rb.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          const timeStr = new Date(rb.startTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
           contextMsg = `I have your table booking for ${rb.partySize} at ${timeStr}.`;
         }
       }
@@ -633,7 +632,7 @@ if (modifyIntent && returnConfirmed && confirmedBookingId) {
       if (existingBooking) {
         await Booking.updateOne({ _id: existingBooking._id }, { $set: { startTime: d } });
       }
-      const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+      const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
       confirmMsg += `Updated time to ${timeStr}. `;
     } catch {}
   }
@@ -893,7 +892,7 @@ if (!orderExtracted.orderType) {
           return { response: `Perfect! Your table for ${draft.partySize} is booked at ${timeString} under ${draft.customerName}, and your ${itemsSummary} will be ready when you arrive. Total is ${total} AED. Is there anything else I can help you with?` };
         }
         if (result?.suggestedTime) {
-          const s = new Date(result.suggestedTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          const s = new Date(result.suggestedTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
           return { response: `We're fully booked at that time. Would ${s} work instead?` };
         }
         return { response: "I'm sorry, we don't have availability at that time. Would you like a different time?" };
@@ -957,12 +956,12 @@ if (!orderExtracted.orderType) {
               "bookingDraft.customerName": null,
             }
           });
-          const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          const timeString = new Date(result.booking.startIso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
           console.log("✅ Booking confirmed");
           return { response: `Perfect! Your table for ${draft.partySize} is confirmed at ${timeString} under ${draft.customerName}. Is there anything else I can help you with?` };
         }
         if (result?.suggestedTime) {
-          const s = new Date(result.suggestedTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+          const s = new Date(result.suggestedTime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
           return { response: `We're fully booked at that time. Would ${s} work instead?` };
         }
         return { response: "I'm sorry, we don't have availability at that time. Would you like a different time?" };
