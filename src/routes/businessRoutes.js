@@ -47,7 +47,7 @@ router.put("/profile", requireAuth, async (req, res) => {
     }
 
     // Allowed fields for profile/settings updates
-    const allowed = ["businessName", "liveUpcomingWindowMinutes"];
+    const allowed = ["businessName", "liveUpcomingWindowMinutes", "vatPercentage", "ownerPhoneNumber", "businessPhoneNumber"];
 
     allowed.forEach((key) => {
       if (req.body[key] !== undefined) {

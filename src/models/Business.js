@@ -68,6 +68,13 @@ const BusinessSchema = new mongoose.Schema(
       max: 300,
     },
 
+    vatPercentage: {
+  type: Number,
+  default: 5,
+  min: 0,
+  max: 100,
+},
+
     /* ======================
        LIVE FLOOR SETTINGS
     ====================== */
