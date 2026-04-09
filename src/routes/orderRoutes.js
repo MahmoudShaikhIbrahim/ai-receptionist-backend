@@ -1,3 +1,5 @@
+// src/routes/orderRoutes.js
+
 const express = require("express");
 const router = express.Router();
 const requireAuth = require("../middleware/authMiddleware");
@@ -17,8 +19,25 @@ router.get("/", requireAuth, async (req, res) => {
       .skip((Number(page) - 1) * Number(limit))
       .lean();
 
+    // ✅ FIX 2: Group dine-in orders by tableId — one row per active table session
+    const tableMap = new Map();
+    const result = [];
+
+    for (const order of orders) {
+      if (order.tableId && ["confirmed", "preparing", "ready"].includes(order.status)) {
+        const key = String(order.tableId);
+        if (!tableMap.has(key)) {
+          tableMap.set(key, order);
+          result.push(order);
+        }
+        // Skip duplicate active orders for same table
+      } else {
+        result.push(order);
+      }
+    }
+
     const total = await Order.countDocuments(query);
-    res.json({ orders, total, page: Number(page), limit: Number(limit) });
+    res.json({ orders: result, total, page: Number(page), limit: Number(limit) });
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch orders" });
   }
@@ -129,6 +148,12 @@ router.delete("/table/:orderId/item", requireAuth, async (req, res) => {
 
       // Sync items array
       order.items = order.rounds.flatMap(r => r.items);
+
+      // ✅ FIX 1: If no rounds left at all, auto-cancel the order
+      if (order.rounds.length === 0) {
+        order.status = "cancelled";
+      }
+
       await order.save();
     }
 

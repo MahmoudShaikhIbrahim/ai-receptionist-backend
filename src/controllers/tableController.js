@@ -4,6 +4,7 @@ const Table = require("../models/Table");
 const Floor = require("../models/Floor");
 const Booking = require("../models/Booking");
 const Business = require("../models/Business");
+const Order = require("../models/Order");
 
 exports.createTable = async (req, res) => {
   try {
@@ -448,6 +449,16 @@ exports.setTableAvailable = async (req, res) => {
 
       await activeBooking.save();
     }
+
+    // ✅ FIX 3: Cancel any active orders for this table — clean session end
+    await Order.updateMany(
+      {
+        businessId,
+        tableId: table._id,
+        status: { $in: ["confirmed", "preparing", "ready"] },
+      },
+      { $set: { status: "cancelled" } }
+    );
 
     return res.json({ success: true });
   } catch (err) {
