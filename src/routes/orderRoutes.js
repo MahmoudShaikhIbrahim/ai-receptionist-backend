@@ -241,12 +241,12 @@ router.patch("/:id/scheduled-time", requireAuth, async (req, res) => {
   }
 });
 
-// PATCH /orders/:id/complete — mark order as delivered/completed, removes from Manual Orders
 router.patch("/:id/complete", requireAuth, async (req, res) => {
   try {
     const order = await Order.findOne({ _id: req.params.id, businessId: req.businessId });
     if (!order) return res.status(404).json({ error: "Order not found" });
-    order.status = order.orderType === "delivery" ? "delivered" : "ready";
+    // ✅ Always use "delivered" so it leaves the active orders filter
+    order.status = "delivered";
     await order.save();
     res.json({ order });
   } catch (err) {
