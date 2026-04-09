@@ -164,4 +164,62 @@ router.delete("/table/:orderId/item", requireAuth, async (req, res) => {
   }
 });
 
+// POST /orders/pickup — create a new manual pickup order
+router.post("/pickup", requireAuth, async (req, res) => {
+  try {
+    const { customerName, customerPhone, items } = req.body;
+    if (!items?.length) return res.status(400).json({ error: "items are required" });
+
+    const roundItems = items.map(i => ({
+      name: i.name, quantity: i.quantity || 1,
+      price: i.price || 0, extras: i.extras || [], notes: i.notes || null,
+    }));
+    const roundTotal = roundItems.reduce((sum, i) => sum + i.price * i.quantity, 0);
+
+    const order = await Order.create({
+      callId: `pickup_${Date.now()}`,
+      businessId: req.businessId,
+      customerName: customerName || "Walk-in",
+      customerPhone: customerPhone || null,
+      orderType: "pickup",
+      items: roundItems,
+      rounds: [{ items: roundItems, sentAt: new Date() }],
+      total: roundTotal,
+      status: "confirmed",
+    });
+
+    res.status(201).json({ order });
+  } catch (err) {
+    console.error("POST /orders/pickup error:", err);
+    res.status(500).json({ error: "Failed to create pickup order" });
+  }
+});
+
+// POST /orders/pickup/round — add a round to existing pickup order
+router.post("/pickup/round", requireAuth, async (req, res) => {
+  try {
+    const { orderId, items } = req.body;
+    if (!orderId || !items?.length) return res.status(400).json({ error: "orderId and items are required" });
+
+    const order = await Order.findOne({ _id: orderId, businessId: req.businessId });
+    if (!order) return res.status(404).json({ error: "Order not found" });
+
+    const roundItems = items.map(i => ({
+      name: i.name, quantity: i.quantity || 1,
+      price: i.price || 0, extras: i.extras || [], notes: i.notes || null,
+    }));
+    const roundTotal = roundItems.reduce((sum, i) => sum + i.price * i.quantity, 0);
+
+    order.rounds.push({ items: roundItems, sentAt: new Date() });
+    order.items.push(...roundItems);
+    order.total = (order.total || 0) + roundTotal;
+    await order.save();
+
+    res.json({ order });
+  } catch (err) {
+    console.error("POST /orders/pickup/round error:", err);
+    res.status(500).json({ error: "Failed to add round" });
+  }
+});
+
 module.exports = router;
