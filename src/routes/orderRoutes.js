@@ -164,11 +164,14 @@ router.delete("/table/:orderId/item", requireAuth, async (req, res) => {
   }
 });
 
-// POST /orders/pickup — create a new manual pickup order
+// POST /orders/pickup — create a new manual order (pickup or delivery)
 router.post("/pickup", requireAuth, async (req, res) => {
   try {
-    const { customerName, customerPhone, items } = req.body;
+    const { customerName, customerPhone, orderType, items, scheduledTime, deliveryAddress } = req.body;
     if (!items?.length) return res.status(400).json({ error: "items are required" });
+
+    const validTypes = ["pickup", "delivery", "dineIn"];
+    const safeType = validTypes.includes(orderType) ? orderType : "pickup";
 
     const roundItems = items.map(i => ({
       name: i.name, quantity: i.quantity || 1,
@@ -177,11 +180,13 @@ router.post("/pickup", requireAuth, async (req, res) => {
     const roundTotal = roundItems.reduce((sum, i) => sum + i.price * i.quantity, 0);
 
     const order = await Order.create({
-      callId: `pickup_${Date.now()}`,
+      callId: `manual_${Date.now()}`,
       businessId: req.businessId,
       customerName: customerName || "Walk-in",
       customerPhone: customerPhone || null,
-      orderType: "pickup",
+      orderType: safeType,
+      deliveryAddress: deliveryAddress || null,
+      scheduledTime: scheduledTime ? new Date(scheduledTime) : null,
       items: roundItems,
       rounds: [{ items: roundItems, sentAt: new Date() }],
       total: roundTotal,
@@ -191,11 +196,11 @@ router.post("/pickup", requireAuth, async (req, res) => {
     res.status(201).json({ order });
   } catch (err) {
     console.error("POST /orders/pickup error:", err);
-    res.status(500).json({ error: "Failed to create pickup order" });
+    res.status(500).json({ error: "Failed to create order" });
   }
 });
 
-// POST /orders/pickup/round — add a round to existing pickup order
+// POST /orders/pickup/round — add a round to existing manual order
 router.post("/pickup/round", requireAuth, async (req, res) => {
   try {
     const { orderId, items } = req.body;
@@ -219,6 +224,50 @@ router.post("/pickup/round", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("POST /orders/pickup/round error:", err);
     res.status(500).json({ error: "Failed to add round" });
+  }
+});
+
+// PATCH /orders/:id/scheduled-time — update pickup/delivery time
+router.patch("/:id/scheduled-time", requireAuth, async (req, res) => {
+  try {
+    const { scheduledTime } = req.body;
+    const order = await Order.findOne({ _id: req.params.id, businessId: req.businessId });
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    order.scheduledTime = scheduledTime ? new Date(scheduledTime) : null;
+    await order.save();
+    res.json({ order });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update time" });
+  }
+});
+
+// PATCH /orders/:id/complete — mark order as delivered/completed, removes from Manual Orders
+router.patch("/:id/complete", requireAuth, async (req, res) => {
+  try {
+    const order = await Order.findOne({ _id: req.params.id, businessId: req.businessId });
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    order.status = order.orderType === "delivery" ? "delivered" : "ready";
+    await order.save();
+    res.json({ order });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to complete order" });
+  }
+});
+
+// GET /orders/manual/active — get all active manual (non-table) orders
+router.get("/manual/active", requireAuth, async (req, res) => {
+  try {
+    const orders = await Order.find({
+      businessId: req.businessId,
+      tableId: null,
+      status: { $in: ["confirmed", "preparing", "ready"] },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({ orders });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch active manual orders" });
   }
 });
 
