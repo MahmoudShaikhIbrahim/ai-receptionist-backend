@@ -109,4 +109,34 @@ router.get("/table/:tableId", requireAuth, async (req, res) => {
   }
 });
 
+// DELETE /orders/table/:orderId/item — remove a specific item from an order
+router.delete("/table/:orderId/item", requireAuth, async (req, res) => {
+  try {
+    const { roundIndex, itemIndex } = req.body;
+    const order = await Order.findOne({ _id: req.params.orderId, businessId: req.businessId });
+    if (!order) return res.status(404).json({ error: "Order not found" });
+
+    if (order.rounds?.[roundIndex]?.items?.[itemIndex] !== undefined) {
+      const removedItem = order.rounds[roundIndex].items[itemIndex];
+      const removedTotal = removedItem.price * removedItem.quantity;
+      order.rounds[roundIndex].items.splice(itemIndex, 1);
+      order.total = Math.max(0, (order.total || 0) - removedTotal);
+
+      // Remove round if empty
+      if (order.rounds[roundIndex].items.length === 0) {
+        order.rounds.splice(roundIndex, 1);
+      }
+
+      // Sync items array
+      order.items = order.rounds.flatMap(r => r.items);
+      await order.save();
+    }
+
+    res.json({ order });
+  } catch (err) {
+    console.error("DELETE item error:", err);
+    res.status(500).json({ error: "Failed to remove item" });
+  }
+});
+
 module.exports = router;
