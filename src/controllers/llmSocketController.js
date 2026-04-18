@@ -477,13 +477,26 @@ async function _processMessage(body, req, callId) {
   console.log(`🗣 User: ${latestUserText}`);
 
   // ── LANGUAGE DETECTION & PERSISTENCE ─────────────────────
-  // Detect from current message, fall back to stored, then default English
-  let lang = freshCall.meta?.lang || null;
+  // IMPORTANT: Always detect from current message first.
+  // Only use stored lang as fallback if current message is too short/noisy
+  // to detect from. Never inherit lang blindly from a previous call's meta.
   const detectedNow = detectLanguage(latestUserText);
-  if (detectedNow) lang = detectedNow;
-  if (!lang) lang = "en"; // default
+  let lang = detectedNow; // prefer current message detection
 
-  // Persist detected language if changed
+  if (!lang) {
+    // Current message undetectable — check if we already detected in THIS call
+    // (stored mid-call, not inherited from a previous call)
+    const storedLang = freshCall.meta?.lang;
+    const callAge = Date.now() - new Date(freshCall.createdAt).getTime();
+    // Only trust stored lang if call is recent (same call session)
+    if (storedLang && callAge < 30 * 60 * 1000) {
+      lang = storedLang;
+    }
+  }
+
+  if (!lang) lang = "en"; // default to English
+
+  // Persist if changed
   if (lang !== freshCall.meta?.lang) {
     await Call.updateOne({ _id: freshCall._id }, { $set: { "meta.lang": lang } });
   }
@@ -918,15 +931,26 @@ async function _processMessage(body, req, callId) {
     const displayName = draft._displayName || draft.customerName;
 
     // ── COMPLETION CHECKS ──────────────────────────────────
+    // Bug fix: if no items in cart, this is a pure booking regardless of what
+    // GPT extracted for orderType. GPT sometimes sets orderType="dineIn" on
+    // table reservation requests — we ignore it when there are no items.
+    const isPureBooking = orderDraft.items?.length === 0;
+    if (isPureBooking && orderDraft.orderType) {
+      // Clear the wrongly extracted orderType
+      orderDraft.orderType = null;
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: { "orderDraft.orderType": null }
+      });
+    }
+
     const bookingComplete =
-      bookingFlowActive &&
-      orderDraft.items?.length === 0 && !orderDraft.orderType &&
+      bookingFlowActive && isPureBooking &&
       draft.partySize && draft.requestedStart && draft.customerName;
 
     const dineInComplete =
+      orderDraft.orderType === "dineIn" &&
       orderDraft.items?.length > 0 && draft.partySize &&
-      draft.requestedStart && draft.customerName &&
-      (orderDraft.orderType === "dineIn" || (!orderDraft.orderType && draft.partySize && draft.requestedStart));
+      draft.requestedStart && draft.customerName;
 
     const pickupComplete =
       orderDraft.orderType === "pickup" &&
@@ -1136,7 +1160,14 @@ async function _processMessage(body, req, callId) {
     if (bookingFlowActive && draft.partySize && draft.requestedStart && !draft.customerName && orderDraft.items?.length === 0)
       return { response: t("askName", lang) };
 
-    return { response: aiResponse || t("howCanIHelp", lang) };
+    return {
+      response: aiResponse || t("howCanIHelp", lang),
+      // If the AI itself responded with a goodbye, end the call
+      ...(aiResponse && (
+        /goodbye|have a (wonderful|great|good) day/i.test(aiResponse) ||
+        /مع السلامة|وداعاً|يوماً رائعاً/.test(aiResponse)
+      ) ? { end_call: true } : {}),
+    };
   }
 
   // ── GOODBYE ───────────────────────────────────────────────
@@ -1144,8 +1175,23 @@ async function _processMessage(body, req, callId) {
     return { response: t("goodbye", lang), end_call: true };
   }
 
+  // ── NOISE / VERY SHORT INPUT GUARD ────────────────────────
+  // Retell sometimes sends background noise or 1-word utterances before
+  // the customer actually speaks (e.g. ".عابس", "Welcome.", "(inaudible)").
+  // If the transcript only has 0-1 turns and the text is very short or
+  // inaudible, just greet and wait — do NOT trigger any flow.
+  const isNoise =
+    latestUserText.length < 4 ||
+    /^\(inaudible/.test(latestUserText) ||
+    /^[\.\!\?،,]+$/.test(latestUserText.trim());
+
+  const transcriptLength = transcript?.length ?? 0;
+  if (isNoise && transcriptLength <= 2) {
+    return { response: t("howCanIHelp", lang) };
+  }
+
   // ── GENERAL FALLBACK ──────────────────────────────────────
-  const isJustGreeting = /^(hi|hello|hey|good morning|good evening|good afternoon|مرحبا|هلا|السلام عليكم|أهلاً|صباح الخير|مساء الخير)[\s\?\!\.]*$/i.test(latestUserText.trim());
+  const isJustGreeting = /^(hi|hello|hey|good morning|good evening|good afternoon|مرحبا|هلا|السلام عليكم|أهلاً|صباح الخير|مساء الخير|أهلين|هلو)[\s\?\!\.،]*$/i.test(latestUserText.trim());
   if (isJustGreeting && !orderDraft.items?.length && !orderDraft.orderType && !draft.partySize) {
     return { response: t("howCanIHelp", lang) };
   }
@@ -1162,7 +1208,16 @@ async function _processMessage(body, req, callId) {
     { role: "user", content: latestUserText || (lang === "ar" ? "مرحبا" : "Hello") },
   ]);
 
-  return { response: aiReply || t("howCanIHelp", lang) };
+  // Bug fix: if AI response contains goodbye sentiment, end the call
+  const aiSaysGoodbye = aiReply && (
+    /goodbye|have a (wonderful|great|good) day/i.test(aiReply) ||
+    /مع السلامة|وداعاً|يوماً رائعاً/.test(aiReply)
+  );
+
+  return {
+    response: aiReply || t("howCanIHelp", lang),
+    ...(aiSaysGoodbye ? { end_call: true } : {}),
+  };
 }
 
 module.exports = { processLLMMessage };
