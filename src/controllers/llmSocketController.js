@@ -338,20 +338,25 @@ Customer just said: "${text}"
 
 STRICT RULES:
 - Current time is ${currentTimeStr}. When customer says relative time ("in X minutes", "بعد ساعة", "after X hours"), calculate actual time from current Dubai time and return HH:MM 24hr.
-- If customer says "book a table" or "احجز طاولة" with NO food items, this is BOOKING ONLY. Do NOT ask about order type.
-- ALWAYS extract orderType from ANY language form:
+- If customer says "book a table" or "احجز طاولة" with NO food items mentioned, this is BOOKING ONLY. Do NOT set orderType. Do NOT ask about order type.
+- NEVER set orderType to "dineIn" for a pure table reservation with no food items ordered.
+- ALWAYS extract orderType from ANY language form ONLY when food items are being ordered:
   * Arabic delivery: "توصيل", "يوصلوا", "ابعتوه", "وصلوه" = "delivery"
-  * Arabic pickup: "استلام", "آخذه", "أجي آخذه", "تيك اواي" = "pickup"  
-  * Arabic dineIn: "نجلس", "نأكل هناك", "أكل داخل", "دايني" = "dineIn"
+  * Arabic pickup: "استلام", "آخذه", "أجي آخذه", "تيك اواي" = "pickup"
+  * Arabic dineIn: "نجلس", "نأكل هناك", "أكل داخل", "دايني" = "dineIn" (ONLY with food items)
   * English delivery: "delivery", "deliver it", "bring it to me" = "delivery"
   * English pickup: "pickup", "pick up", "collect", "take away" = "pickup"
-  * English dineIn: "dine in", "eat here", "eat at the restaurant" = "dineIn"
+  * English dineIn: "dine in", "eat here", "eat at the restaurant" = "dineIn" (ONLY with food items)
 - For names: extract the name exactly as spoken (Arabic or English). Store as-is.
 - For Arabic numbers in party size: convert to integer (ثلاثة = 3, أربعة = 4, etc.)
 - For addresses: extract meaningful location, remove filler words in any language
 - Never ask for phone number
 - Never mention dates, only times
-- If all required info collected, return null for response
+- CRITICAL: NEVER return a confirmation message in your response field. Never say booking confirmed or order confirmed. The system handles all confirmations. Your response should only ask for the next missing piece of information.
+- Required for booking: partySize + time + name. If ANY of these is missing, ask for it.
+- Required for delivery: items + deliveryAddress + name. Ask for each missing piece.
+- Required for pickup: items + time + name. Ask for each missing piece.
+- If all required info is collected, return null for response.
 - intent: "cancel" if customer wants to cancel, "modify" if wants to change, "new" otherwise
 
 Respond ONLY with valid JSON (no markdown):
@@ -960,7 +965,12 @@ async function _processMessage(body, req, callId) {
       orderDraft.orderType === "delivery" &&
       orderDraft.items?.length > 0 && orderDraft.deliveryAddress && draft.customerName;
 
-    if (aiResponse && !bookingComplete && !dineInComplete && !pickupComplete && !deliveryComplete) {
+    // Block GPT confirmation responses — only our save code should confirm
+    const aiSoundsLikeConfirmation = aiResponse && (
+      /تم (تأكيد|حجز|الحجز|الطلب)|confirmed|booking confirmed|order confirmed|your table is|طاولتك محجوزة/i.test(aiResponse)
+    );
+
+    if (aiResponse && !aiSoundsLikeConfirmation && !bookingComplete && !dineInComplete && !pickupComplete && !deliveryComplete) {
       return { response: aiResponse };
     }
     if (dineInComplete && !orderDraft.orderType) orderDraft.orderType = "dineIn";
