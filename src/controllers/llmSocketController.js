@@ -314,6 +314,9 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
 - Understand Arabic time: "الساعة سبعة" = 7:00, "الساعة سبعة ونص" = 7:30, "بعد ساعة" = in 1 hour from now, "بعد نص ساعة" = in 30 minutes
 - Understand Arabic order types: "توصيل" or "يوصلوا" = delivery, "استلام" or "آخذه" or "أجي آخذه" = pickup, "أكل داخل" or "نجلس" or "نأكل هناك" = dineIn
 - Extract Arabic names as-is in the name field (they will be transliterated separately)
+- CRITICAL: Words like أشخاص، شخص، ناس، أفراد are party size words NOT names. Never extract them as a name.
+- CRITICAL: Numbers like أربعة، ثلاثة، اثنين are party sizes NOT names. Never extract them as a name.
+- A name is a proper noun like محمود، سارة، أحمد، خالد، فاطمة — not a number or a common word.
 - Understand Arabic addresses and locations
 - Understand corrections in Arabic: "لا قصدي" or "مو كذا" = correction, "إلغي" or "ألغي" = cancel, "غير" or "بدّل" = modify
 - Your response MUST be in Arabic, warm and natural for a phone call
@@ -1020,7 +1023,15 @@ async function _processMessage(body, req, callId) {
             }
           });
           const timeString   = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
-          const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
+          // Use Arabic item names in Arabic responses
+      const itemsSummary = orderDraft.items.map(i => {
+        if (lang === 'ar') {
+          const menuItem = agent.menu?.find(m => m.name.toLowerCase() === i.name.toLowerCase());
+          const arabicName = menuItem?.nameAr || menuItem?.arabicName || i.name;
+          return `${arabicName} x${i.quantity || 1}`;
+        }
+        return `${i.name} x${i.quantity || 1}`;
+      }).join(", ");
           console.log("✅ Dine-in confirmed");
           return { response: t("orderConfirmedDineIn", lang, draft.partySize, timeString, displayName, itemsSummary, total) };
         }
@@ -1141,7 +1152,14 @@ async function _processMessage(body, req, callId) {
         }
       });
 
-      const itemsSummary = orderDraft.items.map(i => `${i.name} x${i.quantity || 1}`).join(", ");
+      const itemsSummary = orderDraft.items.map(i => {
+        if (lang === 'ar') {
+          const menuItem = agent.menu?.find(m => m.name.toLowerCase() === i.name.toLowerCase());
+          const arabicName = menuItem?.nameAr || menuItem?.arabicName || i.name;
+          return `${arabicName} x${i.quantity || 1}`;
+        }
+        return `${i.name} x${i.quantity || 1}`;
+      }).join(", ");
       const timeStr = draft.requestedStart
         ? new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" })
         : null;
