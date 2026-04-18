@@ -417,7 +417,7 @@ function looksLikeModifyIntent(text) {
 function looksLikeGoodbye(text) {
   if (!text) return false;
   return /\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(text) ||
-    /مع السلامة|شكراً|وداعاً|بس كذا|ما في غير|لا شكراً|يسلموا/.test(text);
+    /مع السلام[ةه]|السلام[ةه]|شكر[اً]|وداع[اً]|بس كذا|ما في غير|لا شكر|يسلموا|يعطيك العافي[ةه]|الله يعافيك|تصبح على خير|باي/.test(text);
 }
 
 // ─── BOOKING ENGINE LOCK ──────────────────────────────────────────────────────
