@@ -553,29 +553,34 @@ async function _processMessage(body, req, callId) {
   const callAge     = Date.now() - new Date(freshCall.createdAt).getTime();
   const withinCall  = callAge < 30 * 60 * 1000;
 
-  // Confidence check — only switch language if message is substantial
-  // Short words like "ok", "yes", "تمام", "آه" are ambiguous and should NOT flip language
-  const wordCount     = latestUserText.trim().split(/s+/).filter(w => w.length > 0).length;
-  const isSubstantial = wordCount >= 3 || latestUserText.length >= 10;
-
   let lang;
 
-  if (detectedNow && isSubstantial) {
-    // Confident detection — always trust this
+  // Arabic characters are an unambiguous signal — always trust them regardless of length.
+  // "مرحبا", "ألو", "أه" are clearly Arabic even as single words.
+  const hasArabicChars = /[\u0600-\u06FF]/.test(latestUserText);
+
+  // Short English filler words that may appear during an Arabic conversation
+  const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh)[\s\.\!\?]*$/i.test(latestUserText.trim());
+
+  if (hasArabicChars) {
+    // Any Arabic character = Arabic. No ambiguity.
+    lang = "ar";
+  } else if (detectedNow === "en" && isEnglishFiller && storedLang === "ar") {
+    // Short English filler word during an Arabic conversation — stay Arabic
+    lang = "ar";
+  } else if (detectedNow) {
+    // No Arabic chars, clear English detection — trust it
     lang = detectedNow;
-  } else if (detectedNow && !isSubstantial && storedLang) {
-    // Short message — only switch if stored lang already matches detected
-    lang = storedLang === detectedNow ? detectedNow : storedLang;
   } else if (storedLang && withinCall) {
-    // No detection from current message — use stored lang from this call
+    // No detection — use stored lang from this call
     lang = storedLang;
   } else {
     lang = "en"; // default
   }
 
-  // Explicit language switch requests always override regardless of length
+  // Explicit language switch requests always override
   const explicitArabic  = /تكلم عربي|بالعربي|عربي بس|كلمني عربي/i.test(latestUserText);
-  const explicitEnglish = /(speak english|in english|english please|talk english|switch to english)/i.test(latestUserText);
+  const explicitEnglish = /\b(speak english|in english|english please|talk english|switch to english)\b/i.test(latestUserText);
   if (explicitArabic)  lang = "ar";
   if (explicitEnglish) lang = "en";
 
@@ -583,7 +588,7 @@ async function _processMessage(body, req, callId) {
   if (lang !== storedLang) {
     await Call.updateOne({ _id: freshCall._id }, { $set: { "meta.lang": lang } });
   }
-  console.log(`🌐 Language: ${lang} (detected: ${detectedNow || "none"}, words: ${wordCount})`);
+  console.log(`🌐 Language: ${lang} (hasArabic: ${hasArabicChars}, stored: ${storedLang || "none"})`);
 
   // ── DRAFT STATE ───────────────────────────────────────────
   let draft = {
@@ -713,6 +718,23 @@ async function _processMessage(body, req, callId) {
       });
       return { response: t("notYou", lang) };
     }
+
+    // Break out of confirmation loop after 2 failed attempts or if customer clearly wants to do something new
+    const confirmAttempts = freshCall.meta?.confirmAttempts ?? 0;
+    const customerWantsAction = looksLikeOrderIntent(latestUserText) || looksLikeBookingIntent(latestUserText);
+
+    if (confirmAttempts >= 2 || customerWantsAction) {
+      await Call.updateOne({ _id: freshCall._id }, {
+        $set: {
+          "meta.awaitingReturnConfirmation": false,
+          "meta.returnConfirmed":            false,
+          "meta.confirmAttempts":            0,
+        }
+      });
+      return { response: lang === "ar" ? "تمام! شو بقدر أساعدك؟" : "No problem! How can I help you?" };
+    }
+
+    await Call.updateOne({ _id: freshCall._id }, { $inc: { "meta.confirmAttempts": 1 } });
 
     return { response: lang === "ar"
       ? `عذراً، لم أفهم. هل أنت ${freshCall.meta?.returningName}؟`
