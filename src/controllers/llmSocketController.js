@@ -449,10 +449,43 @@ function looksLikeModifyIntent(text) {
   return /\b(change|modify|update|edit|make it|instead|switch|different|wrong|correct|fix|actually)\b/i.test(text) ||
     /غيّر|بدّل|عدّل|مو كذا|قصدي|لا لا|أقصد|اصلاً/.test(text);
 }
-function looksLikeGoodbye(text) {
+function looksLikeGoodbye(text, transcript, orderConfirmed, bookingConfirmed) {
   if (!text) return false;
-  return /\b(bye|goodbye|bye bye|thank you|thanks|that's all|nothing else|no thank)\b/i.test(text) ||
-    /مع السلام[ةه]|السلام[ةه]|شكر[اً]|وداع[اً]|بس كذا|ما في غير|لا شكر|يسلموا|يعطيك العافي[ةه]|الله يعافيك|تصبح على خير|باي/.test(text);
+
+  // Hard goodbye — always end call immediately
+  const hardGoodbye =
+    /\b(bye|goodbye|bye bye|that's all|nothing else|no thank)\b/i.test(text) ||
+    /مع السلام[ةه]|السلام[ةه]|وداع[اً]|بس كذا|ما في غير|باي\b/.test(text);
+
+  if (hardGoodbye) return true;
+
+  // Soft phrases — "thank you", "شكراً", "يعطيك العافية", "لا شكراً"
+  // These are ONLY goodbyes when:
+  // 1. Something was confirmed (order or booking) — most reliable signal
+  // 2. OR conversation is substantial (8+ turns) AND no new intent in message
+  const softGoodbye =
+    /\b(thank you|thanks)\b/i.test(text) ||
+    /^لا[،,]?\s*شكر/i.test(text) || // "لا شكراً" at start of message
+    /يسلموا|يعطيك العافي[ةه]|الله يعافيك|تصبح على خير/.test(text);
+
+  // "شكراً" alone — only goodbye if confirmed or very late in conversation
+  const shukran = /^شكر[اً]?[\s\.،]*$/.test(text.trim());
+
+  if (softGoodbye || shukran) {
+    const turns = transcript?.length ?? 0;
+    const somethingConfirmed = orderConfirmed || bookingConfirmed;
+
+    // After a confirmed booking/order — these phrases = goodbye
+    if (somethingConfirmed && turns >= 4) return true;
+
+    // Very late in long conversation with no booking/order — probably goodbye
+    if (turns >= 10) return true;
+
+    // Too early in conversation — could be a greeting, not goodbye
+    return false;
+  }
+
+  return false;
 }
 
 // ─── BOOKING ENGINE LOCK ──────────────────────────────────────────────────────
@@ -825,7 +858,7 @@ async function _processMessage(body, req, callId) {
 
   // ── ORDER CONFIRMED — handle next action ──────────────────
   if (orderDraft.status === "confirmed") {
-    if (looksLikeGoodbye(latestUserText)) {
+    if (looksLikeGoodbye(latestUserText, transcript, orderDraft.status === "confirmed", !!justConfirmedBooking)) {
       return { response: t("goodbye", lang), end_call: true };
     }
     if (looksLikeOrderIntent(latestUserText) && !modifyIntent && !cancelIntent) {
@@ -870,7 +903,7 @@ async function _processMessage(body, req, callId) {
   // ── ACTIVE FLOW ───────────────────────────────────────────
   if (bookingFlowActive || orderFlowActive || cancelIntent || modifyIntent) {
 
-    if (looksLikeGoodbye(latestUserText)) {
+    if (looksLikeGoodbye(latestUserText, transcript, orderDraft.status === "confirmed", !!justConfirmedBooking)) {
       return { response: t("goodbye", lang), end_call: true };
     }
 
@@ -1241,7 +1274,7 @@ async function _processMessage(body, req, callId) {
   }
 
   // ── GOODBYE ───────────────────────────────────────────────
-  if (looksLikeGoodbye(latestUserText)) {
+  if (looksLikeGoodbye(latestUserText, transcript, orderDraft.status === "confirmed", !!justConfirmedBooking)) {
     return { response: t("goodbye", lang), end_call: true };
   }
 
