@@ -41,95 +41,95 @@ function detectLanguage(text) {
   return "en";
 }
 
-// ─── BILINGUAL RESPONSES ──────────────────────────────────────────────────────
+// ─── BILINGUAL RESPONSES — Levantine Street Arabic ───────────────────────────
 const R = {
   // Greetings / Generic
-  howCanIHelp:        { en: "How can I help you today?",                                          ar: "كيف أقدر أساعدك اليوم؟" },
-  somethingWrong:     { en: "Sorry, something went wrong.",                                       ar: "عذراً، حدث خطأ ما." },
-  oneMovement:        { en: "One moment please...",                                               ar: "لحظة من فضلك..." },
-  goodbye:            { en: "Thank you for calling! Have a wonderful day. Goodbye!",              ar: "شكراً لاتصالك! أتمنى لك يوماً رائعاً. مع السلامة!" },
-  anythingElse:       { en: "Is there anything else I can help you with?",                       ar: "هل هناك أي شيء آخر أقدر أساعدك فيه؟" },
-  sorryDidntCatch:    { en: "Sorry, I didn't catch that.",                                        ar: "عذراً، لم أفهم ذلك." },
+  howCanIHelp:        { en: "How can I help you today?",                                ar: "شو بقدر أساعدك؟" },
+  somethingWrong:     { en: "Sorry, something went wrong.",                             ar: "في مشكلة صغيرة، حاول مرة ثانية." },
+  oneMovement:        { en: "One moment please...",                                     ar: "لحظة معي..." },
+  goodbye:            { en: "Thank you for calling! Have a wonderful day. Goodbye!",    ar: "يسلموا على اتصالك! يوم سعيد، مع السلامة!" },
+  anythingElse:       { en: "Is there anything else I can help you with?",              ar: "في شي ثاني بقدر أساعدك فيه؟" },
+  sorryDidntCatch:    { en: "Sorry, I didn't catch that.",                              ar: "معلش، ما سمعتك منيح، ممكن تعيد؟" },
 
   // Booking
   bookingConfirmed:   (name, size, time) => ({
-    en: `Perfect! Your table for ${size} is confirmed at ${time} under ${name}. Is there anything else I can help you with?`,
-    ar: `ممتاز! تم تأكيد طاولتك لـ${size} أشخاص الساعة ${time} باسم ${name}. هل هناك أي شيء آخر أقدر أساعدك فيه؟`,
+    en: `Perfect! Your table for ${size} is confirmed at ${time} under ${name}. Anything else?`,
+    ar: `تمام يا ${name}! حجزنالك طاولة لـ${size} أشخاص الساعة ${time}. في شي ثاني؟`,
   }),
   bookingUpdated:     (name, size, time) => ({
-    en: `Done! Your booking has been updated to ${size} people at ${time} under ${name}. Is there anything else I can help you with?`,
-    ar: `تم! تم تحديث حجزك إلى ${size} أشخاص الساعة ${time} باسم ${name}. هل هناك أي شيء آخر أقدر أساعدك فيه؟`,
+    en: `Done! Updated your booking to ${size} people at ${time} under ${name}. Anything else?`,
+    ar: `تمام! عدّلنا الحجز لـ${size} أشخاص الساعة ${time} باسم ${name}. في شي ثاني؟`,
   }),
-  bookingCancelled:   { en: "Done! Your booking has been cancelled. Is there anything else I can help you with?",  ar: "تم! تم إلغاء حجزك. هل هناك أي شيء آخر أقدر أساعدك فيه؟" },
-  noAvailability:     { en: "I'm sorry, we don't have availability at that time. Would you like a different time?", ar: "عذراً، لا يوجد لدينا طاولة متاحة في هذا الوقت. هل تريد وقتاً آخر؟" },
+  bookingCancelled:   { en: "Done! Your booking has been cancelled. Anything else?",    ar: "تمام، ألغينا الحجز. في شي ثاني؟" },
+  noAvailability:     { en: "Sorry, we're fully booked at that time. Want a different time?", ar: "آسفين، ما في طاولة بهالوقت. بدك وقت ثاني؟" },
   suggestTime:        (time) => ({
-    en: `We're fully booked at that time. Would ${time} work instead?`,
-    ar: `للأسف محجوز في ذلك الوقت. هل يناسبك ${time}؟`,
+    en: `We're full at that time. How about ${time} instead?`,
+    ar: `الوقت هداك محجوز. كيف لو ${time}؟`,
   }),
 
   // Order
   orderConfirmedDelivery: (items, address, name, total) => ({
-    en: `Perfect! Your order for ${items} will be delivered to ${address} under ${name}. Total is ${total} AED. Is there anything else I can help you with?`,
-    ar: `ممتاز! طلبك لـ${items} سيتم توصيله إلى ${address} باسم ${name}. المجموع ${total} درهم. هل هناك أي شيء آخر أقدر أساعدك فيه؟`,
+    en: `Perfect! ${items} on the way to ${address} for ${name}. Total: ${total} AED. Anything else?`,
+    ar: `تمام يا ${name}! الـ${items} رايح يوصلك على ${address}. المجموع ${total} درهم. في شي ثاني؟`,
   }),
   orderConfirmedPickup: (items, name, time, total) => ({
-    en: `Perfect! Your order for ${items} is ready for pickup under ${name}${time ? ` at ${time}` : ""}. Total is ${total} AED. Is there anything else I can help you with?`,
-    ar: `ممتاز! طلبك لـ${items} جاهز للاستلام باسم ${name}${time ? ` الساعة ${time}` : ""}. المجموع ${total} درهم. هل هناك أي شيء آخر أقدر أساعدك فيه؟`,
+    en: `Got it! ${items} ready for pickup under ${name}${time ? ` at ${time}` : ""}. Total: ${total} AED. Anything else?`,
+    ar: `تمام يا ${name}! الـ${items} جاهز للاستلام${time ? ` الساعة ${time}` : ""}. المجموع ${total} درهم. في شي ثاني؟`,
   }),
   orderConfirmedDineIn: (size, time, name, items, total) => ({
-    en: `Perfect! Your table for ${size} is booked at ${time} under ${name}, and your ${items} will be ready when you arrive. Total is ${total} AED. Is there anything else I can help you with?`,
-    ar: `ممتاز! تم حجز طاولتك لـ${size} أشخاص الساعة ${time} باسم ${name}، و${items} ستكون جاهزة عند وصولك. المجموع ${total} درهم. هل هناك أي شيء آخر أقدر أساعدك فيه؟`,
+    en: `Perfect! Table for ${size} at ${time} under ${name}, and ${items} will be ready when you arrive. Total: ${total} AED. Anything else?`,
+    ar: `تمام يا ${name}! حجزنالك طاولة لـ${size} الساعة ${time}، والـ${items} رح يكون جاهز لما توصل. المجموع ${total} درهم. في شي ثاني؟`,
   }),
-  orderCancelled:     { en: "Done! Your order has been cancelled. Is there anything else I can help you with?",    ar: "تم! تم إلغاء طلبك. هل هناك أي شيء آخر أقدر أساعدك فيه؟" },
+  orderCancelled:     { en: "Done! Order cancelled. Anything else?",                    ar: "تمام، ألغينا الـ order. في شي ثاني؟" },
   orderTooOldCancel:  (mins) => ({
-    en: `I'm sorry, your order was placed ${mins} minutes ago and cannot be cancelled.`,
-    ar: `عذراً، طلبك تم منذ ${mins} دقيقة ولا يمكن إلغاؤه.`,
+    en: `Sorry, your order was placed ${mins} minutes ago and can't be cancelled now.`,
+    ar: `آسفين، الـ order صار عليه ${mins} دقيقة وما بينلغى هلق.`,
   }),
   orderTooOldModify:  (mins) => ({
-    en: `I'm sorry, your order was placed ${mins} minutes ago and cannot be modified.`,
-    ar: `عذراً، طلبك تم منذ ${mins} دقيقة ولا يمكن تعديله.`,
+    en: `Sorry, your order was placed ${mins} minutes ago and can't be modified now.`,
+    ar: `آسفين، الـ order صار عليه ${mins} دقيقة وما بنتعدل هلق.`,
   }),
 
   // Questions — Booking
-  askPartySize:       { en: "How many people will be joining?",       ar: "كم شخص سيحضر؟" },
-  askTime:            { en: "What time would you like?",              ar: "في أي وقت تريد؟" },
-  askName:            { en: "What name should I put the booking under?", ar: "باسم من الحجز؟" },
-  askOrderName:       { en: "What name should I put the order under?",   ar: "باسم من الطلب؟" },
+  askPartySize:       { en: "How many people will be joining?",          ar: "كم نفر رح يجوا؟" },
+  askTime:            { en: "What time works for you?",                  ar: "أي ساعة بتحب؟" },
+  askName:            { en: "What name should I put the booking under?", ar: "باسم مين الحجز؟" },
+  askOrderName:       { en: "What name should I put the order under?",   ar: "باسم مين الـ order؟" },
 
   // Questions — Order
-  askDeliveryAddress: { en: "What is the delivery address?",          ar: "ما هو عنوان التوصيل؟" },
-  askPickupTime:      { en: "What time would you like to pick up your order?", ar: "في أي وقت تريد استلام طلبك؟" },
-  askDiningTime:      { en: "What time would you like to dine?",      ar: "في أي وقت تريد تناول الطعام؟" },
-  askDiningPeople:    { en: "How many people will be dining?",        ar: "كم شخص سيتناول الطعام؟" },
-  askNewAddress:      { en: "Sure! What is the new delivery address?", ar: "بالتأكيد! ما هو العنوان الجديد للتوصيل؟" },
+  askDeliveryAddress: { en: "What's the delivery address?",              ar: "وين بدك نوصّل؟" },
+  askPickupTime:      { en: "What time will you pick up?",               ar: "أي ساعة رح تيجي تاخد الـ order؟" },
+  askDiningTime:      { en: "What time would you like to come?",         ar: "أي ساعة رح تيجوا؟" },
+  askDiningPeople:    { en: "How many people will be dining?",           ar: "كم نفر رح تأكلوا؟" },
+  askNewAddress:      { en: "Sure! What's the new delivery address?",    ar: "أكيد! شو العنوان الجديد؟" },
 
   // Returning caller
   isThisYou:          (name) => ({
-    en: `${name}? Is that right?`,
-    ar: `${name}؟ هل هذا صحيح؟`,
+    en: `${name}? Is that you?`,
+    ar: `${name}؟ أنت؟`,
   }),
   returningGreet:     (msg) => ({
-    en: `Great! ${msg} How can I help you?`,
-    ar: `ممتاز! ${msg} كيف أقدر أساعدك؟`,
+    en: `Hey! ${msg} What can I do for you?`,
+    ar: `هلا! ${msg} شو بقدر أساعدك؟`,
   }),
-  notYou:             { en: "I'm sorry about that! How can I help you today?", ar: "عذراً على ذلك! كيف أقدر أساعدك اليوم؟" },
+  notYou:             { en: "My bad! How can I help you?",               ar: "آسف عليك! كيف بقدر أساعدك؟" },
 
-  // Returning context messages
+  // Returning context
   returningBookingCtx: (size, time, name) => ({
-    en: `I have your table booking for ${size} at ${time}.`,
-    ar: `لدي حجزك لـ${size} أشخاص الساعة ${time}.`,
+    en: `I see a booking for ${size} people at ${time}.`,
+    ar: `شايف عندك حجز لـ${size} أشخاص الساعة ${time}.`,
   }),
   returningOrderCtx:   (type, items, status) => ({
-    en: `I have your ${type} order for ${items} — it's currently ${status}.`,
-    ar: `لدي طلبك لـ${items} — الحالة الآن ${status}.`,
+    en: `I see your ${type} order for ${items} — currently ${status}.`,
+    ar: `شايف عندك ${items} — الـ status هلق: ${status}.`,
   }),
 
   // Name update
   nameUpdated:        (name) => ({
-    en: `Done! I've updated the booking name to ${name}. Is there anything else I can help you with?`,
-    ar: `تم! تم تغيير اسم الحجز إلى ${name}. هل هناك أي شيء آخر أقدر أساعدك فيه؟`,
+    en: `Done! Booking name updated to ${name}. Anything else?`,
+    ar: `تمام! غيّرنا الاسم على ${name}. في شي ثاني؟`,
   }),
-  askNewName:         { en: "What name would you like the booking under?", ar: "باسم من تريد الحجز؟" },
+  askNewName:         { en: "What name for the booking?",                ar: "باسم مين بدك الحجز؟" },
 };
 
 // Helper: get response in correct language
@@ -210,6 +210,25 @@ function formatMenu(menu) {
   }).join("\n\n");
 }
 
+// Fuzzy menu item lookup — handles Arabic/English name mismatches
+function findMenuItem(menu, itemName) {
+  if (!menu?.length || !itemName) return null;
+  const name = itemName.toLowerCase().trim();
+  // 1. Exact match
+  let found = menu.find(m => m.name.toLowerCase() === name);
+  if (found) return found;
+  // 2. Contains match (item name contains search or vice versa)
+  found = menu.find(m => m.name.toLowerCase().includes(name) || name.includes(m.name.toLowerCase()));
+  if (found) return found;
+  // 3. Word overlap match — at least one word in common
+  const searchWords = name.split(/s+/).filter(w => w.length > 2);
+  found = menu.find(m => {
+    const menuWords = m.name.toLowerCase().split(/s+/);
+    return searchWords.some(sw => menuWords.some(mw => mw.includes(sw) || sw.includes(mw)));
+  });
+  return found || null;
+}
+
 function formatOpeningHours(openingHours) {
   if (!openingHours) return "Opening hours not set.";
   const days = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
@@ -238,33 +257,34 @@ function buildSystemPrompt(agent, lang) {
   const basePrompt = agent.agentPrompt?.trim()
     ? agent.agentPrompt
     : lang === "ar"
-      ? `أنت ${agent.agentName || "مساعد ذكي"} في ${agent.businessName}. أنت ودود ومحترف ومفيد.`
+      ? `أنت موظف استقبال في ${agent.businessName}. شخصيتك خفيفة ومريحة، بتحكي شامي عامي، وبتساعد الزبائن بطريقة طبيعية وإنسانية.`
       : `You are ${agent.agentName || "an AI receptionist"} at ${agent.businessName}. You are friendly, professional, and helpful.`;
 
   if (lang === "ar") {
     return `${basePrompt}
 
-تقدر تساعد العملاء في: ${features.join("، ") || "الاستفسارات العامة"}.
+بتساعد الزبائن في: ${features.join("، ") || "الاستفسارات العامة"}.
 
-قواعد اللغة:
-- تكلم دائماً بالعربية في هذه المحادثة
-- استخدم لغة عربية طبيعية وواضحة مناسبة للمكالمات الهاتفية
-- لا تخلط بين العربية والإنجليزية في نفس الجملة
+شخصيتك:
+- بتحكي عربي شامي عامي — مش فصحى ومش رسمي أبداً
+- أسلوبك طبيعي ومريح مثل شخص بيساعد صديقه
+- ممكن تخلط إنجليزي بعربي بشكل طبيعي: "الـ order جاهز"، "شو بدك تـ order؟"، "الـ delivery رايح يوصلك"، "الـ total كم؟"
+- بتفهم خليجي وشامي وبترد بشامي دائماً
+- بتفهم جمل مخلوطة: "بدي delivery"، "متى رح يوصل الـ order؟"، "بدي أحجز table"
+- ردودك قصيرة ومباشرة — مو خطب طويلة
+- دافي ومرحّب بشكل طبيعي مو مبالغ فيه
 
 أوقات العمل:
 ${formatOpeningHours(agent.openingHours)}
 
-${hasOrders && agent.menu?.length > 0 ? `القائمة:\n${formatMenu(agent.menu)}` : ""}
+${hasOrders && agent.menu?.length > 0 ? `المنيو:\n${formatMenu(agent.menu)}` : ""}
 
 القواعد:
-- اسأل سؤالاً واحداً فقط في كل رد
-- اجعل ردودك قصيرة وطبيعية مناسبة للمكالمة
-- لا تطلب رقم الهاتف من العميل
-- لا تذكر التواريخ للحجوزات، فقط الأوقات
-- لا تقترح الطلب بعد تأكيد الحجز
-- بدلاً من "party size" قل "كم شخص"
-- إذا طلب العميل شيئاً غير موجود في القائمة، اعتذر بلطف وقل إنه غير متوفر
-- كن دافئاً ومرحباً دائماً`;
+- سؤال واحد بس بكل رد
+- لا تطلب رقم التلفون
+- الحجوزات بالوقت بس، مو التاريخ
+- إذا ما في الصنف بالمنيو، اعتذر بشكل طبيعي وقول ما عنا هيك
+- لا تقترح طلب أكل بعد ما تأكد الحجز`;
   }
 
   return `${basePrompt}
@@ -309,19 +329,26 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
   });
 
   const langNote = lang === "ar"
-    ? `The customer is speaking Arabic. You MUST:
+    ? `The customer is speaking Arabic (possibly mixed with English). You MUST:
+- Understand BOTH Gulf Arabic (يبي، أبغى، وين، كيف حالك) AND Levantine Arabic (بدي، وين، كيفك، يلا، ماشي) — respond in Levantine only
+- Understand mixed sentences naturally: "بدي delivery"، "متى رح يوصل الـ order؟"، "بدي اطلب pickup"، "كم الـ total؟"، "في شي بالـ menu؟"
+- English words inside Arabic are normal: order، delivery، pickup، total، menu، table، booking — extract them correctly
 - Understand Arabic numbers: واحد=1, اثنين=2, ثلاثة=3, أربعة=4, خمسة=5, ستة=6, سبعة=7, ثمانية=8, تسعة=9, عشرة=10
-- Understand Arabic time: "الساعة سبعة" = 7:00, "الساعة سبعة ونص" = 7:30, "بعد ساعة" = in 1 hour from now, "بعد نص ساعة" = in 30 minutes
-- Understand Arabic order types: "توصيل" or "يوصلوا" = delivery, "استلام" or "آخذه" or "أجي آخذه" = pickup, "أكل داخل" or "نجلس" or "نأكل هناك" = dineIn
-- Extract Arabic names as-is in the name field (they will be transliterated separately)
-- CRITICAL: Words like أشخاص، شخص، ناس، أفراد are party size words NOT names. Never extract them as a name.
-- CRITICAL: Numbers like أربعة، ثلاثة، اثنين are party sizes NOT names. Never extract them as a name.
-- A name is a proper noun like محمود، سارة، أحمد، خالد، فاطمة — not a number or a common word.
+- Understand Arabic time: "الساعة سبعة" = 7:00, "الساعة سبعة ونص" = 7:30, "بعد ساعة" = in 1 hour, "بعد نص ساعة" = in 30 minutes
+- Understand order types in any form:
+  * delivery: "توصيل"، "يوصلوا"، "delivery"، "بدي delivery"، "دليفري"
+  * pickup: "استلام"، "آخذه"، "pickup"، "أجي آخذه"، "تيك اواي"
+  * dineIn: "نجلس"، "نأكل هناك"، "أكل داخل"، "dine in"، "دايني"
+- Extract Arabic names as-is (they will be transliterated separately)
+- CRITICAL: أشخاص، شخص، ناس، أفراد are party size words NOT names
+- CRITICAL: أربعة، ثلاثة، اثنين are numbers/party sizes NOT names
+- A name is a proper noun: محمود، سارة، أحمد، خالد، فاطمة
 - Understand Arabic addresses and locations
-- Understand corrections in Arabic: "لا قصدي" or "مو كذا" = correction, "إلغي" or "ألغي" = cancel, "غير" or "بدّل" = modify
-- Your response MUST be in Arabic, warm and natural for a phone call
-- Even if you respond in Arabic, the JSON keys stay in English`
-    : `The customer is speaking English. Respond in English.`;
+- Understand corrections: "لا قصدي"، "مو كذا"، "غلط" = correction — "إلغي"، "ألغي" = cancel — "غيّر"، "بدّل" = modify
+- Your response MUST be in casual Levantine street Arabic mixed naturally with English words where it fits — sound like a real person not a robot
+- Example responses: "شو بدك تـ order؟"، "الـ delivery رح يوصلك خلال شوي"، "باسم مين الـ booking؟"، "تمام، الـ total كم"
+- JSON keys stay in English always`
+    : `The customer is speaking English. Respond in English, casual and friendly.`;
 
   const prompt = `You are a receptionist at ${agent.businessName}.
 Current time in Dubai: ${currentTimeStr}
@@ -365,7 +392,7 @@ STRICT RULES:
 Respond ONLY with valid JSON (no markdown):
 {
   "extracted": {"partySize": <number or null>, "time": "<HH:MM 24hr or null>", "name": "<string or null>"},
-  "orderExtracted": {"items": [{"name": "<exact English menu item name>", "quantity": <number>, "extras": []}], "orderType": "<dineIn|pickup|delivery|null>", "deliveryAddress": "<cleaned address or null>"},
+  "orderExtracted": {"items": [{"name": "<use EXACT name from menu list above — do not translate or paraphrase>", "quantity": <number>, "extras": []}], "orderType": "<dineIn|pickup|delivery|null>", "deliveryAddress": "<cleaned address or null>"},
   "intent": "<cancel|modify|new|null>",
   "response": "<your reply in ${lang === "ar" ? "Arabic" : "English"} or null>"
 }`;
@@ -489,26 +516,41 @@ async function _processMessage(body, req, callId) {
   // Only use stored lang as fallback if current message is too short/noisy
   // to detect from. Never inherit lang blindly from a previous call's meta.
   const detectedNow = detectLanguage(latestUserText);
-  let lang = detectedNow; // prefer current message detection
+  const storedLang  = freshCall.meta?.lang;
+  const callAge     = Date.now() - new Date(freshCall.createdAt).getTime();
+  const withinCall  = callAge < 30 * 60 * 1000;
 
-  if (!lang) {
-    // Current message undetectable — check if we already detected in THIS call
-    // (stored mid-call, not inherited from a previous call)
-    const storedLang = freshCall.meta?.lang;
-    const callAge = Date.now() - new Date(freshCall.createdAt).getTime();
-    // Only trust stored lang if call is recent (same call session)
-    if (storedLang && callAge < 30 * 60 * 1000) {
-      lang = storedLang;
-    }
+  // Confidence check — only switch language if message is substantial
+  // Short words like "ok", "yes", "تمام", "آه" are ambiguous and should NOT flip language
+  const wordCount     = latestUserText.trim().split(/s+/).filter(w => w.length > 0).length;
+  const isSubstantial = wordCount >= 3 || latestUserText.length >= 10;
+
+  let lang;
+
+  if (detectedNow && isSubstantial) {
+    // Confident detection — always trust this
+    lang = detectedNow;
+  } else if (detectedNow && !isSubstantial && storedLang) {
+    // Short message — only switch if stored lang already matches detected
+    lang = storedLang === detectedNow ? detectedNow : storedLang;
+  } else if (storedLang && withinCall) {
+    // No detection from current message — use stored lang from this call
+    lang = storedLang;
+  } else {
+    lang = "en"; // default
   }
 
-  if (!lang) lang = "en"; // default to English
+  // Explicit language switch requests always override regardless of length
+  const explicitArabic  = /تكلم عربي|بالعربي|عربي بس|كلمني عربي/i.test(latestUserText);
+  const explicitEnglish = /(speak english|in english|english please|talk english|switch to english)/i.test(latestUserText);
+  if (explicitArabic)  lang = "ar";
+  if (explicitEnglish) lang = "en";
 
   // Persist if changed
-  if (lang !== freshCall.meta?.lang) {
+  if (lang !== storedLang) {
     await Call.updateOne({ _id: freshCall._id }, { $set: { "meta.lang": lang } });
   }
-  console.log(`🌐 Language: ${lang}`);
+  console.log(`🌐 Language: ${lang} (detected: ${detectedNow || "none"}, words: ${wordCount})`);
 
   // ── DRAFT STATE ───────────────────────────────────────────
   let draft = {
@@ -889,7 +931,7 @@ async function _processMessage(body, req, callId) {
           : { name: item.name || item.item, quantity: item.quantity || 1, extras: item.extras || [] }
       );
       const validItems = normalizedItems.filter(item =>
-        item?.name && agent.menu?.some(m => m.name.toLowerCase() === item.name.toLowerCase() && m.available)
+        item?.name && !!findMenuItem(agent.menu?.filter(m => m.available), item.name)
       );
       for (const newItem of validItems) {
         const existingIndex = orderDraft.items.findIndex(e => e.name.toLowerCase() === newItem.name.toLowerCase());
@@ -984,11 +1026,11 @@ async function _processMessage(body, req, callId) {
       processingCalls.add(callId);
       try {
         const total = orderDraft.items.reduce((sum, item) => {
-          const mi = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+          const mi = findMenuItem(agent.menu, item.name);
           return sum + (mi?.price || 0) * (item.quantity || 1);
         }, 0);
         const orderItems = orderDraft.items.map(item => {
-          const mi = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+          const mi = findMenuItem(agent.menu, item.name);
           return { name: item.name, quantity: item.quantity || 1, price: mi?.price || 0, extras: item.extras || [] };
         });
 
@@ -1107,11 +1149,11 @@ async function _processMessage(body, req, callId) {
     if (pickupComplete || deliveryComplete) {
       const existingOrder = confirmedOrderId ? await Order.findById(confirmedOrderId) : null;
       const total = orderDraft.items.reduce((sum, item) => {
-        const mi = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+        const mi = findMenuItem(agent.menu, item.name);
         return sum + (mi?.price || 0) * (item.quantity || 1);
       }, 0);
       const orderItems = orderDraft.items.map(item => {
-        const mi = agent.menu?.find(m => m.name.toLowerCase() === item.name.toLowerCase());
+        const mi = findMenuItem(agent.menu, item.name);
         return { name: item.name, quantity: item.quantity || 1, price: mi?.price || 0, extras: item.extras || [] };
       });
 
