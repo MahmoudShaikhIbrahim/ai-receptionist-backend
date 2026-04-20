@@ -509,7 +509,10 @@ async function processLLMMessage(body, req) {
 
   if (!acquireLock(callId)) {
     console.log(`⏭ Skipping duplicate request for call: ${callId}`);
-    return null;
+    // Don't return null — Retell needs a response or it goes silent
+    // Wait briefly for the active request to finish, then return a filler
+    await new Promise(r => setTimeout(r, 800));
+    return null; // Retell will use the response from the first request
   }
 
   try {
@@ -545,40 +548,37 @@ async function _processMessage(body, req, callId) {
   console.log(`🗣 User: ${latestUserText}`);
 
   // ── LANGUAGE DETECTION & PERSISTENCE ─────────────────────
-  // IMPORTANT: Always detect from current message first.
-  // Only use stored lang as fallback if current message is too short/noisy
-  // to detect from. Never inherit lang blindly from a previous call's meta.
-  const detectedNow = detectLanguage(latestUserText);
-  const storedLang  = freshCall.meta?.lang;
-  const callAge     = Date.now() - new Date(freshCall.createdAt).getTime();
-  const withinCall  = callAge < 30 * 60 * 1000;
+  const detectedNow  = detectLanguage(latestUserText);
+  const storedLang   = freshCall.meta?.lang;
+  const callAge      = Date.now() - new Date(freshCall.createdAt).getTime();
+  const withinCall   = callAge < 30 * 60 * 1000;
+
+  // Agent's configured language in MongoDB (agent.language = "Arabic" or "English")
+  // This is the DEFAULT language for this restaurant — used for greetings and fallback
+  const agentLangSetting = (agent.language || "English").toLowerCase();
+  const agentDefaultLang = agentLangSetting.includes("arab") ? "ar" : "en";
 
   let lang;
 
-  // Arabic characters are an unambiguous signal — always trust them regardless of length.
-  // "مرحبا", "ألو", "أه" are clearly Arabic even as single words.
+  // Arabic chars are unambiguous — always trust them regardless of length
   const hasArabicChars = /[\u0600-\u06FF]/.test(latestUserText);
 
-  // Short English filler words that may appear during an Arabic conversation
+  // Short English fillers that may appear during an Arabic conversation
   const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh)[\s\.\!\?]*$/i.test(latestUserText.trim());
 
   if (hasArabicChars) {
-    // Any Arabic character = Arabic. No ambiguity.
     lang = "ar";
   } else if (detectedNow === "en" && isEnglishFiller && storedLang === "ar") {
-    // Short English filler word during an Arabic conversation — stay Arabic
-    lang = "ar";
+    lang = "ar"; // short English filler during Arabic conversation — stay Arabic
   } else if (detectedNow) {
-    // No Arabic chars, clear English detection — trust it
     lang = detectedNow;
   } else if (storedLang && withinCall) {
-    // No detection — use stored lang from this call
     lang = storedLang;
   } else {
-    lang = "en"; // default
+    lang = agentDefaultLang; // fall back to restaurant's configured language
   }
 
-  // Explicit language switch requests always override
+  // Explicit switch requests always override
   const explicitArabic  = /تكلم عربي|بالعربي|عربي بس|كلمني عربي/i.test(latestUserText);
   const explicitEnglish = /\b(speak english|in english|english please|talk english|switch to english)\b/i.test(latestUserText);
   if (explicitArabic)  lang = "ar";
@@ -588,7 +588,20 @@ async function _processMessage(body, req, callId) {
   if (lang !== storedLang) {
     await Call.updateOne({ _id: freshCall._id }, { $set: { "meta.lang": lang } });
   }
-  console.log(`🌐 Language: ${lang} (hasArabic: ${hasArabicChars}, stored: ${storedLang || "none"})`);
+  console.log(`🌐 Language: ${lang} (hasArabic: ${hasArabicChars}, stored: ${storedLang || "none"}, default: ${agentDefaultLang})`);
+
+  // ── FIRST TURN GREETING ───────────────────────────────────
+  // Retell sends response_required before the customer speaks.
+  // Return a clean one-line greeting immediately — no GPT call, no cutoff.
+  const isFirstTurn = transcript.length === 0 || (transcript.length === 1 && transcript[0]?.role === "agent");
+  const isNoisyInput = !latestUserText || latestUserText.length < 3 || /^[.!?,،s]+$/.test(latestUserText.trim());
+
+  if (isFirstTurn && isNoisyInput && !storedLang) {
+    const greeting = lang === "ar"
+      ? `أهلاً وسهلاً في ${agent.businessName}! شو بقدر أساعدك؟`
+      : `Hello! Welcome to ${agent.businessName}. How can I help you?`;
+    return { response: greeting };
+  }
 
   // ── DRAFT STATE ───────────────────────────────────────────
   let draft = {
@@ -1300,19 +1313,24 @@ async function _processMessage(body, req, callId) {
     return { response: t("goodbye", lang), end_call: true };
   }
 
-  // ── NOISE / VERY SHORT INPUT GUARD ────────────────────────
-  // Retell sometimes sends background noise or 1-word utterances before
-  // the customer actually speaks (e.g. ".عابس", "Welcome.", "(inaudible)").
-  // If the transcript only has 0-1 turns and the text is very short or
-  // inaudible, just greet and wait — do NOT trigger any flow.
+  // ── NOISE / FIRST TURN GUARD ──────────────────────────────
+  // Retell fires response_required with noise before the customer speaks.
+  // Detect meaningless first-turn noise and respond with a clean greeting.
   const isNoise =
-    latestUserText.length < 4 ||
-    /^\(inaudible/.test(latestUserText) ||
-    /^[\.\!\?،,]+$/.test(latestUserText.trim());
+    !latestUserText ||
+    latestUserText.length < 3 ||
+    /^\(inaudible/i.test(latestUserText) ||
+    /^[\s\.,\-\!\?،]+$/.test(latestUserText.trim()) ||
+    /^(hell|sor|h|uh|welcome)\b[\s\.\!]*$/i.test(latestUserText.trim());
 
   const transcriptLength = transcript?.length ?? 0;
-  if (isNoise && transcriptLength <= 2) {
-    return { response: t("howCanIHelp", lang) };
+
+  if (transcriptLength <= 1 && isNoise) {
+    // Very first turn with noise — return clean greeting without hitting GPT
+    const greeting = lang === "ar"
+      ? `أهلاً وسهلاً في ${agent.businessName || "المطعم"}! شو بقدر أساعدك؟`
+      : `Welcome to ${agent.businessName || "the restaurant"}! How can I help you?`;
+    return { response: greeting };
   }
 
   // ── GENERAL FALLBACK ──────────────────────────────────────
