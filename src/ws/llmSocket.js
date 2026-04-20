@@ -1,6 +1,8 @@
 // src/ws/llmSocket.js
 
 const { processLLMMessage } = require("../controllers/llmSocketController");
+const Agent = require("../models/Agent");
+const Call  = require("../models/Call");
 
 function extractLatestUserText(data) {
   const transcript = Array.isArray(data?.transcript)
@@ -46,23 +48,71 @@ function handleLLMWebSocket(ws, req) {
   console.log("🔌 Retell WebSocket connected");
   const callStartTime = Date.now();
 
+  // Track processed response_ids to avoid duplicates
   const processedResponseIds = new Set();
+  // Track in-flight response_ids to avoid processing same id twice concurrently
+  const inFlightResponseIds  = new Set();
+  // Last sent response per call — used to re-send if Retell asks again
+  let lastResponseText = null;
+  let lastResponseId   = null;
 
-  // Send initial greeting and mark response_id 0 as handled
-  safeSend(ws, {
-    response_id: 0,
-    content: "Hello! Welcome to Al Bait Al Shami. How can I help you today?",
-    content_complete: true,
-    end_call: false,
-  });
-  processedResponseIds.add(0);
+  // Send initial greeting dynamically from agent settings
+  // Extract callId from URL path e.g. /llm/respond/call_xxx
+  const urlParts = (req?.url || "").split("/");
+  const callIdFromUrl = urlParts[urlParts.length - 1]?.startsWith("call_")
+    ? urlParts[urlParts.length - 1]
+    : null;
+
+  // Load agent settings to get business name and language for greeting
+  (async () => {
+    try {
+      if (callIdFromUrl) {
+        const callDoc = await Call.findOne({
+          $or: [{ callId: callIdFromUrl }, { call_id: callIdFromUrl }]
+        }).lean();
+        if (callDoc) {
+          const agent = await Agent.findById(callDoc.agentId).lean();
+          if (agent) {
+            const isArabic = (agent.language || "English").toLowerCase().includes("arab");
+            const greeting = isArabic
+              ? `أهلاً وسهلاً في ${agent.businessName}! شو بقدر أساعدك؟`
+              : `Welcome to ${agent.businessName}! How can I help you?`;
+            safeSend(ws, {
+              response_id: 0,
+              content: greeting,
+              content_complete: true,
+              end_call: false,
+            });
+            processedResponseIds.add(0);
+            console.log(`📤 Greeting (${isArabic ? "ar" : "en"}): ${greeting}`);
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("❌ Greeting load error:", err.message);
+    }
+    // Fallback greeting if agent not found
+    safeSend(ws, {
+      response_id: 0,
+      content: "Welcome! How can I help you?",
+      content_complete: true,
+      end_call: false,
+    });
+    processedResponseIds.add(0);
+  })();
 
   ws.on("message", async (rawMessage) => {
     let data;
     try {
       data = JSON.parse(rawMessage.toString());
     } catch {
-      safeSend(ws, { response_id: 0, content: "Sorry, could you repeat that?", content_complete: true, end_call: false });
+      safeSend(ws, {
+        response_id: 0,
+        content: "Sorry, could you repeat that?",
+        content_complete: true,
+        end_call: false,
+      });
       return;
     }
 
@@ -72,17 +122,49 @@ function handleLLMWebSocket(ws, req) {
 
       if (interactionType !== "response_required") return;
 
+      // Already processed this response_id — re-send last response if available
       if (processedResponseIds.has(responseId)) {
-        console.log("⏭ Skipping duplicate response_id:", responseId);
+        console.log(`⏭ Already processed response_id: ${responseId}`);
+        if (lastResponseText && lastResponseId === responseId) {
+          safeSend(ws, {
+            response_id: responseId,
+            content: lastResponseText,
+            content_complete: true,
+            end_call: false,
+          });
+        }
         return;
       }
-      processedResponseIds.add(responseId);
+
+      // Currently processing this response_id — wait and re-send when done
+      if (inFlightResponseIds.has(responseId)) {
+        console.log(`⏳ In-flight response_id: ${responseId} — waiting`);
+        // Wait up to 8 seconds for the in-flight request to finish
+        for (let i = 0; i < 16; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          if (!inFlightResponseIds.has(responseId)) {
+            // It finished — re-send the response
+            if (lastResponseText) {
+              safeSend(ws, {
+                response_id: responseId,
+                content: lastResponseText,
+                content_complete: true,
+                end_call: false,
+              });
+            }
+            return;
+          }
+        }
+        console.log(`⚠️ In-flight timeout for response_id: ${responseId}`);
+        return;
+      }
 
       // Skip response_id 1 if it comes within 2 seconds of call start (noise)
       if (responseId === 1) {
         const callAge = Date.now() - callStartTime;
         if (callAge < 2000) {
           console.log("⏭ Skipping early response_id 1 (noise at call start)");
+          processedResponseIds.add(responseId);
           safeSend(ws, {
             response_id: responseId,
             content: "",
@@ -93,6 +175,9 @@ function handleLLMWebSocket(ws, req) {
         }
       }
 
+      // Mark as in-flight
+      inFlightResponseIds.add(responseId);
+
       const latestUserText = extractLatestUserText(data);
       console.log("🗣 User:", latestUserText || "(none)");
 
@@ -101,9 +186,18 @@ function handleLLMWebSocket(ws, req) {
         req
       );
 
-      if (!result || !result.response) return;
-      const responseText = result.response.trim();
-      const shouldEndCall  = result?.end_call === true;
+      // Mark as done
+      inFlightResponseIds.delete(responseId);
+      processedResponseIds.add(responseId);
+
+      if (!result?.response) return;
+
+      const responseText  = result.response.trim();
+      const shouldEndCall = result?.end_call === true;
+
+      // Save last response for potential re-sends
+      lastResponseText = responseText;
+      lastResponseId   = responseId;
 
       console.log("📤 Response:", responseText);
 
@@ -116,8 +210,10 @@ function handleLLMWebSocket(ws, req) {
 
     } catch (err) {
       console.error("❌ Error:", err.message || err);
+      const responseId = data?.response_id ?? 0;
+      inFlightResponseIds.delete(responseId);
       safeSend(ws, {
-        response_id: data?.response_id ?? 0,
+        response_id: responseId,
         content: "Sorry, something went wrong. Could you repeat that?",
         content_complete: true,
         end_call: false,

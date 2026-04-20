@@ -73,13 +73,19 @@ const CallSchema = new mongoose.Schema(
       deliveryAddress: { type: String, default: null },
     },
 
-    // 📞 Returning caller meta
+    // 📞 Call session meta — persisted across turns
     meta: {
+      // Language detected for this call — "ar" or "en"
+      // Persisted so language stays consistent across turns
+      lang: { type: String, default: null },
+
+      // Returning caller confirmation flow
       awaitingReturnConfirmation: { type: Boolean, default: false },
       returnConfirmed:            { type: Boolean, default: false },
       returningName:              { type: String,  default: null },
       returningBookingId:         { type: String,  default: null },
       returningOrderId:           { type: String,  default: null },
+      confirmAttempts:            { type: Number,  default: 0 },
     },
 
     // 📝 AI outputs

@@ -507,13 +507,7 @@ async function processLLMMessage(body, req) {
   }
   if (!callId) return { response: "Sorry, something went wrong." };
 
-  if (!acquireLock(callId)) {
-    console.log(`⏭ Skipping duplicate request for call: ${callId}`);
-    // Don't return null — Retell needs a response or it goes silent
-    // Wait briefly for the active request to finish, then return a filler
-    await new Promise(r => setTimeout(r, 800));
-    return null; // Retell will use the response from the first request
-  }
+  // Note: deduplication is handled in llmSocket.js via response_id tracking
 
   try {
     return await _processMessage(body, req, callId);
