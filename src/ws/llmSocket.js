@@ -154,20 +154,20 @@ function handleLLMWebSocket(ws, req) {
         return;
       }
 
-      // Skip response_id 1 if it comes within 2 seconds of call start (noise)
-      if (responseId === 1) {
-        const callAge = Date.now() - callStartTime;
-        if (callAge < 2000) {
-          console.log("⏭ Skipping early response_id 1 (noise at call start)");
-          processedResponseIds.add(responseId);
-          safeSend(ws, {
-            response_id: responseId,
-            content: "",
-            content_complete: true,
-            end_call: false,
-          });
-          return;
-        }
+      // Skip early response_ids that arrive before the customer has spoken
+      // This prevents the agent from responding to its own greeting being echoed back
+      const callAge = Date.now() - callStartTime;
+      if (callAge < 4000 && responseId <= 3) {
+        console.log(`⏭ Skipping early echo response_id ${responseId} (${callAge}ms after call start)`);
+        processedResponseIds.add(responseId);
+        // Send empty response so Retell doesn't hang
+        safeSend(ws, {
+          response_id: responseId,
+          content: "",
+          content_complete: true,
+          end_call: false,
+        });
+        return;
       }
 
       // Mark as in-flight
