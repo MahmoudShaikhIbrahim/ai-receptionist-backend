@@ -58,48 +58,43 @@ function handleLLMWebSocket(ws, req) {
 
   // Send initial greeting dynamically from agent settings
   // Extract callId from URL path e.g. /llm/respond/call_xxx
+  // Extract callId from WebSocket URL — retry lookup to handle race condition
+  // where WebSocket connects before the Retell webhook saves the Call document
   const urlParts = (req?.url || "").split("/");
   const callIdFromUrl = urlParts[urlParts.length - 1]?.startsWith("call_")
-    ? urlParts[urlParts.length - 1]
-    : null;
+    ? urlParts[urlParts.length - 1] : null;
 
-  // Load agent settings to get business name and language for greeting
   (async () => {
-    try {
-      if (callIdFromUrl) {
-        const callDoc = await Call.findOne({
-          $or: [{ callId: callIdFromUrl }, { call_id: callIdFromUrl }]
-        }).lean();
-        if (callDoc) {
-          const agent = await Agent.findById(callDoc.agentId).lean();
-          if (agent) {
-            const isArabic = (agent.language || "English").toLowerCase().includes("arab");
-            const greeting = isArabic
-              ? `أهلاً وسهلاً في ${agent.businessName}! شو بقدر أساعدك؟`
-              : `Welcome to ${agent.businessName}! How can I help you?`;
-            safeSend(ws, {
-              response_id: 0,
-              content: greeting,
-              content_complete: true,
-              end_call: false,
-            });
-            processedResponseIds.add(0);
-            console.log(`📤 Greeting (${isArabic ? "ar" : "en"}): ${greeting}`);
-            return;
+    let agent = null;
+    if (callIdFromUrl) {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        try {
+          const callDoc = await Call.findOne({
+            $or: [{ callId: callIdFromUrl }, { call_id: callIdFromUrl }]
+          }).lean();
+          if (callDoc?.agentId) {
+            agent = await Agent.findById(callDoc.agentId).lean();
+            if (agent) break;
           }
+        } catch (e) {
+          console.error("Greeting attempt", attempt + 1, "error:", e.message);
         }
+        await new Promise(r => setTimeout(r, 500));
       }
-    } catch (err) {
-      console.error("❌ Greeting load error:", err.message);
     }
-    // Fallback greeting if agent not found
-    safeSend(ws, {
-      response_id: 0,
-      content: "Welcome! How can I help you?",
-      content_complete: true,
-      end_call: false,
-    });
-    processedResponseIds.add(0);
+    if (agent) {
+      const isArabic = (agent.language || "English").toLowerCase().includes("arab");
+      const greeting = isArabic
+        ? `أهلاً وسهلاً في ${agent.businessName}! شو بقدر أساعدك؟`
+        : `Welcome to ${agent.businessName}! How can I help you?`;
+      safeSend(ws, { response_id: 0, content: greeting, content_complete: true, end_call: false });
+      processedResponseIds.add(0);
+      console.log(`📤 Greeting (${isArabic ? "ar" : "en"}): ${greeting}`);
+    } else {
+      safeSend(ws, { response_id: 0, content: "Welcome! How can I help you?", content_complete: true, end_call: false });
+      processedResponseIds.add(0);
+      console.log("📤 Greeting fallback — agent not found for", callIdFromUrl);
+    }
   })();
 
   ws.on("message", async (rawMessage) => {
