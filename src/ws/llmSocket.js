@@ -154,10 +154,12 @@ function handleLLMWebSocket(ws, req) {
         return;
       }
 
-      // Skip early response_ids that arrive before the customer has spoken.
-      // The agent's own greeting gets echoed back by the transcriber as garbled text.
-      // We block ALL responses for the first 6 seconds after call start,
-      // unless the text clearly contains Arabic characters (real customer input).
+      // Extract user text early — needed for echo guard
+      const latestUserText = extractLatestUserText(data);
+
+      // Skip early responses that are echoes of our own greeting.
+      // The transcriber picks up the agent's Arabic greeting and sends it back
+      // as garbled English. Block non-Arabic text for first 6 seconds.
       const callAge = Date.now() - callStartTime;
       const textHasArabic = /[\u0600-\u06FF]/.test(latestUserText);
 
@@ -175,8 +177,6 @@ function handleLLMWebSocket(ws, req) {
 
       // Mark as in-flight
       inFlightResponseIds.add(responseId);
-
-      const latestUserText = extractLatestUserText(data);
       console.log("🗣 User:", latestUserText || "(none)");
 
       const result = await processLLMMessage(
