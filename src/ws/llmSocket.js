@@ -154,13 +154,16 @@ function handleLLMWebSocket(ws, req) {
         return;
       }
 
-      // Skip early response_ids that arrive before the customer has spoken
-      // This prevents the agent from responding to its own greeting being echoed back
+      // Skip early response_ids that arrive before the customer has spoken.
+      // The agent's own greeting gets echoed back by the transcriber as garbled text.
+      // We block ALL responses for the first 6 seconds after call start,
+      // unless the text clearly contains Arabic characters (real customer input).
       const callAge = Date.now() - callStartTime;
-      if (callAge < 4000 && responseId <= 3) {
-        console.log(`⏭ Skipping early echo response_id ${responseId} (${callAge}ms after call start)`);
+      const textHasArabic = /[\u0600-\u06FF]/.test(latestUserText);
+
+      if (callAge < 6000 && !textHasArabic) {
+        console.log(`⏭ Blocking echo response_id ${responseId} (${callAge}ms, no Arabic chars)`);
         processedResponseIds.add(responseId);
-        // Send empty response so Retell doesn't hang
         safeSend(ws, {
           response_id: responseId,
           content: "",
