@@ -284,7 +284,10 @@ ${hasOrders && agent.menu?.length > 0 ? `المنيو:\n${formatMenu(agent.menu)
 - لا تطلب رقم التلفون
 - الحجوزات بالوقت بس، مو التاريخ
 - إذا ما في الصنف بالمنيو، اعتذر بشكل طبيعي وقول ما عنا هيك
-- لا تقترح طلب أكل بعد ما تأكد الحجز`;
+- لا تقترح طلب أكل بعد ما تأكد الحجز
+- لا تقرأ المنيو كله أبداً — إذا قال الزبون "بدي أطلب" قول "شو بدك تطلب؟" بس
+- إذا سألك عن صنف معين، أخبره بالسعر فقط
+- إذا سألك "شو عندكم؟"، قول مثلاً: "عندنا شاورما، برجر، زنجر وأكثر — شو بيشتهيك؟"`;
   }
 
   return `${basePrompt}
@@ -306,7 +309,9 @@ Rules:
 - NEVER suggest ordering after a booking is confirmed
 - NEVER say "party size" — say "how many people" instead
 - If asked about something not on the menu, politely say it is not available
-- Always be warm and welcoming`;
+- Always be warm and welcoming
+- NEVER read the full menu aloud — if customer says "I want to order" just say "What would you like?"
+- If asked "what do you have?", give a brief summary like "We have shawarma, burgers, zinger and more — what sounds good?"`;
 }
 
 // ─── EXTRACTION ───────────────────────────────────────────────────────────────
