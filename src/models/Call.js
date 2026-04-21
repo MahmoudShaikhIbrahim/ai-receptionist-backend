@@ -71,6 +71,7 @@ const CallSchema = new mongoose.Schema(
       orderType:       { type: String, default: null },
       status:          { type: String, default: null },
       deliveryAddress: { type: String, default: null },
+      notes:           { type: String, default: null },
     },
 
     // 📞 Call session meta — persisted across turns

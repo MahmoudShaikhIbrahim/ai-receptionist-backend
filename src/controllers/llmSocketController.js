@@ -378,21 +378,41 @@ STRICT RULES:
   * English pickup: "pickup", "pick up", "collect", "take away" = "pickup"
   * English dineIn: "dine in", "eat here", "eat at the restaurant" = "dineIn" (ONLY with food items)
 - For names: extract the name exactly as spoken (Arabic or English). Store as-is.
+- CRITICAL: Words like أشخاص، شخص، ناس are party size words NOT names. Numbers like أربعة، ثلاثة are NOT names.
 - For Arabic numbers in party size: convert to integer (ثلاثة = 3, أربعة = 4, etc.)
-- For addresses: extract meaningful location, remove filler words in any language
+- For addresses (CRITICAL):
+  * NEVER save a partial address. "الميدان" alone is NOT enough — ask for building name and unit number.
+  * A complete delivery address must have: area/neighborhood + building name + apartment/unit number
+  * Format: "unit, building, area, city" e.g. "302, Binghatti Heights, JVC, Dubai"
+  * If customer gives only area ("الميدان", "JVC"), ask: "شو اسم البرج؟ ورقم الشقة؟"
+  * If customer gives area + building but no unit, ask: "رقم الشقة؟"
+  * Extract apartment numbers, floor numbers, villa numbers — they are part of the address
+  * Common UAE areas: JVC, JBR, Marina, Downtown, Deira, Sharjah, Abu Dhabi, الخان, الميدان, etc.
+  * From building name you can infer the city/area — include it in the address
+- For item notes (CRITICAL):
+  * Extract ANY customization the customer mentions for a specific item
+  * "بدون خضار" = no vegetables, "بدون بصل" = no onions, "extra sauce" = extra sauce, "حار" = spicy
+  * These go in the item's "notes" field, NOT in the order notes
+  * If customer says notes AFTER confirming items, attach them to the relevant item
+- For order notes: general instructions not specific to one item (e.g. "اطرق الباب مرتين", "اتصل لما توصل")
 - Never ask for phone number
 - Never mention dates, only times
-- CRITICAL: NEVER return a confirmation message in your response field. Never say booking confirmed or order confirmed. The system handles all confirmations. Your response should only ask for the next missing piece of information.
-- Required for booking: partySize + time + name. If ANY of these is missing, ask for it.
-- Required for delivery: items + deliveryAddress + name. Ask for each missing piece.
+- CRITICAL: NEVER return a confirmation message in your response. The system handles confirmations.
+- Required for booking: partySize + time + name. If ANY missing, ask for it.
+- Required for delivery: items + COMPLETE address (area + building + unit) + name. Ask for each missing piece.
 - Required for pickup: items + time + name. Ask for each missing piece.
-- If all required info is collected, return null for response.
+- If all required info collected, return null for response.
 - intent: "cancel" if customer wants to cancel, "modify" if wants to change, "new" otherwise
 
 Respond ONLY with valid JSON (no markdown):
 {
   "extracted": {"partySize": <number or null>, "time": "<HH:MM 24hr or null>", "name": "<string or null>"},
-  "orderExtracted": {"items": [{"name": "<use EXACT name from menu list above — do not translate or paraphrase>", "quantity": <number>, "extras": []}], "orderType": "<dineIn|pickup|delivery|null>", "deliveryAddress": "<cleaned address or null>"},
+  "orderExtracted": {
+    "items": [{"name": "<EXACT menu name>", "quantity": <number>, "extras": [], "notes": "<item customization or null>"}],
+    "orderType": "<dineIn|pickup|delivery|null>",
+    "deliveryAddress": "<unit, building, area, city — or null if incomplete>",
+    "notes": "<order-level notes or null>"
+  },
   "intent": "<cancel|modify|new|null>",
   "response": "<your reply in ${lang === "ar" ? "Arabic" : "English"} or null>"
 }`;
@@ -609,6 +629,7 @@ async function _processMessage(body, req, callId) {
     orderType:       freshCall.orderDraft?.orderType       ?? null,
     status:          freshCall.orderDraft?.status          ?? null,
     deliveryAddress: freshCall.orderDraft?.deliveryAddress ?? null,
+    notes:           freshCall.orderDraft?.notes           ?? null,
   };
 
   // ── BOOKING INTENT RESET ──────────────────────────────────
@@ -989,16 +1010,21 @@ async function _processMessage(body, req, callId) {
     if (orderExtracted.items?.length > 0) {
       const normalizedItems = orderExtracted.items.map(item =>
         typeof item === "string"
-          ? { name: item, quantity: 1, extras: [] }
-          : { name: item.name || item.item, quantity: item.quantity || 1, extras: item.extras || [] }
+          ? { name: item, quantity: 1, extras: [], notes: null }
+          : { name: item.name || item.item, quantity: item.quantity || 1, extras: item.extras || [], notes: item.notes || null }
       );
       const validItems = normalizedItems.filter(item =>
         item?.name && !!findMenuItem(agent.menu?.filter(m => m.available), item.name)
       );
       for (const newItem of validItems) {
         const existingIndex = orderDraft.items.findIndex(e => e.name.toLowerCase() === newItem.name.toLowerCase());
-        if (existingIndex >= 0) orderDraft.items[existingIndex].quantity = newItem.quantity || 1;
-        else orderDraft.items.push(newItem);
+        if (existingIndex >= 0) {
+          orderDraft.items[existingIndex].quantity = newItem.quantity || 1;
+          // Update notes if provided
+          if (newItem.notes) orderDraft.items[existingIndex].notes = newItem.notes;
+        } else {
+          orderDraft.items.push(newItem);
+        }
       }
     }
 
@@ -1024,6 +1050,7 @@ async function _processMessage(body, req, callId) {
       }
     }
     if (orderExtracted.deliveryAddress) orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
+    if (orderExtracted.notes) orderDraft.notes = orderExtracted.notes;
 
     // Save drafts
     await Call.updateOne({ _id: freshCall._id }, {
@@ -1036,6 +1063,7 @@ async function _processMessage(body, req, callId) {
         "orderDraft.orderType":        orderDraft.orderType,
         "orderDraft.status":           orderDraft.status,
         "orderDraft.deliveryAddress":  orderDraft.deliveryAddress,
+        "orderDraft.notes":            orderDraft.notes,
       }
     });
 
@@ -1119,6 +1147,7 @@ async function _processMessage(body, req, callId) {
             customerName: draft.customerName,
             customerPhone: draft.customerPhone || callerPhone,
             items: orderItems, orderType: "dineIn", total, status: "confirmed",
+            notes: orderDraft.notes || null,
           });
           await Call.updateOne({ _id: freshCall._id }, {
             $set: {
@@ -1243,6 +1272,7 @@ async function _processMessage(body, req, callId) {
             items: orderItems, orderType: orderDraft.orderType,
             scheduledTime: draft.requestedStart || null,
             total, status: "confirmed",
+            notes: orderDraft.notes || null,
           });
           console.log("✅ Order saved:", orderDraft.orderType);
         }
