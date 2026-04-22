@@ -952,6 +952,17 @@ async function _processMessage(body, req, callId) {
         if (mentionsAddress) return { response: t("askNewAddress", lang) };
       }
     } else {
+      // Check if customer is adding notes/customizations to confirmed order
+      const mentionsNotes = /بدون|بدو|without|no |extra|حار|spicy|اضافي|خضار|بصل|جبن|صوص|sauce|cheese|onion|vegg/i.test(latestUserText);
+      if (mentionsNotes) {
+        // Extract notes and attach to the existing order
+        const existingOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 });
+        if (existingOrder) {
+          const currentNotes = existingOrder.notes ? existingOrder.notes + ". " + latestUserText : latestUserText;
+          await Order.updateOne({ _id: existingOrder._id }, { $set: { notes: currentNotes } });
+          return { response: lang === "ar" ? "تمام، أضفنا ملاحظتك. في شي ثاني؟" : "Got it! Added your notes. Anything else?" };
+        }
+      }
       return { response: t("anythingElse", lang) };
     }
   }
@@ -1127,7 +1138,7 @@ async function _processMessage(body, req, callId) {
         }, 0);
         const orderItems = orderDraft.items.map(item => {
           const mi = findMenuItem(agent.menu, item.name);
-          return { name: item.name, quantity: item.quantity || 1, price: mi?.price || 0, extras: item.extras || [] };
+          return { name: item.name, quantity: item.quantity || 1, price: mi?.price || 0, extras: item.extras || [], notes: item.notes || null };
         });
 
         const existingBooking = await Booking.findOne({ callId, status: { $in: ["confirmed","seated"] } });
@@ -1251,7 +1262,7 @@ async function _processMessage(body, req, callId) {
       }, 0);
       const orderItems = orderDraft.items.map(item => {
         const mi = findMenuItem(agent.menu, item.name);
-        return { name: item.name, quantity: item.quantity || 1, price: mi?.price || 0, extras: item.extras || [] };
+        return { name: item.name, quantity: item.quantity || 1, price: mi?.price || 0, extras: item.extras || [], notes: item.notes || null };
       });
 
       if (existingOrder) {
