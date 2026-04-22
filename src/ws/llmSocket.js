@@ -48,24 +48,22 @@ function handleLLMWebSocket(ws, req) {
   console.log("🔌 Retell WebSocket connected");
   const callStartTime = Date.now();
 
-  // Track which response_ids we have fully completed (sent a real response for)
+  // Track processed response_ids to avoid duplicates
   const processedResponseIds = new Set();
-
-  // Track which response_ids are currently being processed (in-flight)
-  // Key: response_id, Value: true
-  // NOTE: Retell reuses response_id per-call-turn, NOT globally.
-  // We use callId+responseId as compound key to avoid cross-turn collisions.
-  const inFlightKeys = new Set();
-
+  // Track in-flight response_ids to avoid processing same id twice concurrently
+  const inFlightResponseIds  = new Set();
+  // Last sent response per call — used to re-send if Retell asks again
   let lastResponseText = null;
   let lastResponseId   = null;
 
-  // Extract callId from WebSocket URL — e.g. /llm/respond/call_xxx
+  // Send initial greeting dynamically from agent settings
+  // Extract callId from URL path e.g. /llm/respond/call_xxx
+  // Extract callId from WebSocket URL — retry lookup to handle race condition
+  // where WebSocket connects before the Retell webhook saves the Call document
   const urlParts = (req?.url || "").split("/");
   const callIdFromUrl = urlParts[urlParts.length - 1]?.startsWith("call_")
     ? urlParts[urlParts.length - 1] : null;
 
-  // Send initial greeting from agent settings
   (async () => {
     let agent = null;
     if (callIdFromUrl) {
@@ -90,11 +88,11 @@ function handleLLMWebSocket(ws, req) {
         ? `أهلاً وسهلاً في ${agent.businessName}! شو بقدر أساعدك؟`
         : `Welcome to ${agent.businessName}! How can I help you?`;
       safeSend(ws, { response_id: 0, content: greeting, content_complete: true, end_call: false });
-      processedResponseIds.add("0");
+      processedResponseIds.add(0);
       console.log(`📤 Greeting (${isArabic ? "ar" : "en"}): ${greeting}`);
     } else {
       safeSend(ws, { response_id: 0, content: "Welcome! How can I help you?", content_complete: true, end_call: false });
-      processedResponseIds.add("0");
+      processedResponseIds.add(0);
       console.log("📤 Greeting fallback — agent not found for", callIdFromUrl);
     }
   })();
@@ -119,14 +117,9 @@ function handleLLMWebSocket(ws, req) {
 
       if (interactionType !== "response_required") return;
 
-      // Use compound key: callId + responseId, because Retell reuses responseId
-      // across turns (it's a per-turn counter, not globally unique per call)
-      const latestUserText = extractLatestUserText(data);
-      const flightKey = `${callIdFromUrl}:${responseId}:${latestUserText.slice(0, 30)}`;
-
-      // Already fully processed this exact response — re-send if needed
-      if (processedResponseIds.has(flightKey)) {
-        console.log(`⏭ Already processed: ${flightKey}`);
+      // Already processed this response_id — re-send last response if available
+      if (processedResponseIds.has(responseId)) {
+        console.log(`⏭ Already processed response_id: ${responseId}`);
         if (lastResponseText && lastResponseId === responseId) {
           safeSend(ws, {
             response_id: responseId,
@@ -138,30 +131,52 @@ function handleLLMWebSocket(ws, req) {
         return;
       }
 
-      // Currently processing this exact response — skip, don't queue or wait
-      // The controller's promise-based lock will handle it
-      if (inFlightKeys.has(flightKey)) {
-        console.log(`⏳ Already in-flight, skipping: ${flightKey}`);
+      // Currently processing this response_id — wait and re-send when done
+      if (inFlightResponseIds.has(responseId)) {
+        console.log(`⏳ In-flight response_id: ${responseId} — waiting`);
+        // Wait up to 8 seconds for the in-flight request to finish
+        for (let i = 0; i < 16; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          if (!inFlightResponseIds.has(responseId)) {
+            // It finished — re-send the response
+            if (lastResponseText) {
+              safeSend(ws, {
+                response_id: responseId,
+                content: lastResponseText,
+                content_complete: true,
+                end_call: false,
+              });
+            }
+            return;
+          }
+        }
+        console.log(`⚠️ In-flight timeout for response_id: ${responseId}`);
         return;
       }
 
-      // Echo guard: the transcriber picks up the agent's own greeting audio
-      // and sends it back as garbled text (e.g. "Welcome back to...").
-      // For the first 5 seconds, only process turns that contain real Arabic
-      // or are at least 4 words (real customer speech, not transcriber echo).
+      // Extract user text early — needed for echo guard
+      const latestUserText = extractLatestUserText(data);
+
+      // Skip early responses that are echoes of our own greeting.
+      // The transcriber picks up the agent's Arabic greeting and sends it back
+      // as garbled English. Block non-Arabic text for first 6 seconds.
       const callAge = Date.now() - callStartTime;
       const textHasArabic = /[\u0600-\u06FF]/.test(latestUserText);
-      const wordCount = latestUserText.trim().split(/\s+/).filter(Boolean).length;
 
-      if (callAge < 5000 && !textHasArabic && wordCount < 4) {
-        // This looks like a transcriber echo of our greeting — silently skip it.
-        // Do NOT send any response back. Sending empty string causes TTS issues.
-        console.log(`⏭ Echo guard skip (${callAge}ms): "${latestUserText}"`);
+      if (callAge < 6000 && !textHasArabic) {
+        console.log(`⏭ Blocking echo response_id ${responseId} (${callAge}ms, no Arabic chars)`);
+        processedResponseIds.add(responseId);
+        safeSend(ws, {
+          response_id: responseId,
+          content: "",
+          content_complete: true,
+          end_call: false,
+        });
         return;
       }
 
       // Mark as in-flight
-      inFlightKeys.add(flightKey);
+      inFlightResponseIds.add(responseId);
       console.log("🗣 User:", latestUserText || "(none)");
 
       const result = await processLLMMessage(
@@ -170,11 +185,10 @@ function handleLLMWebSocket(ws, req) {
       );
 
       // Mark as done
-      inFlightKeys.delete(flightKey);
-      processedResponseIds.add(flightKey);
+      inFlightResponseIds.delete(responseId);
+      processedResponseIds.add(responseId);
 
-      // If controller returned null (locked/skipped), do nothing — no response sent
-      if (!result || !result.response) return;
+      if (!result?.response) return;
 
       const responseText  = result.response.trim();
       const shouldEndCall = result?.end_call === true;
@@ -195,9 +209,7 @@ function handleLLMWebSocket(ws, req) {
     } catch (err) {
       console.error("❌ Error:", err.message || err);
       const responseId = data?.response_id ?? 0;
-      const latestUserText = extractLatestUserText(data);
-      const flightKey = `${callIdFromUrl}:${responseId}:${latestUserText.slice(0, 30)}`;
-      inFlightKeys.delete(flightKey);
+      inFlightResponseIds.delete(responseId);
       safeSend(ws, {
         response_id: responseId,
         content: "Sorry, something went wrong. Could you repeat that?",

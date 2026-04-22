@@ -7,104 +7,46 @@ const Order   = require("../models/Order");
 const { getAIResponse }            = require("../services/aiChatService");
 const { findNearestAvailableSlot } = require("../services/bookingService");
 
-// ─── IN-MEMORY AGENT CACHE (5 min TTL) ───────────────────────────────────────
-// Avoids hitting MongoDB on every single message for the same agent.
-const agentCache = new Map();
-const AGENT_CACHE_TTL = 5 * 60 * 1000;
-async function getCachedAgent(agentId) {
-  const entry = agentCache.get(String(agentId));
-  if (entry && Date.now() - entry.ts < AGENT_CACHE_TTL) return entry.agent;
-  const agent = await Agent.findById(agentId).lean();
-  if (agent) agentCache.set(String(agentId), { agent, ts: Date.now() });
-  return agent;
-}
-
-// ─── PER-CALL PROCESSING LOCK (Promise-based) ────────────────────────────────
-// Stays locked for the ENTIRE async processing duration, not just N milliseconds.
-// This prevents Retell's incremental ASR transcript updates from firing multiple
-// parallel OpenAI calls and sending multiple responses back for the same user turn.
-//
-// Retell streams partial transcripts as separate response_required events, each
-// arriving ~500ms-1000ms apart. A timestamp lock of 300ms is far too short.
-// A promise lock holds until the current _processMessage() fully resolves.
-const callLockMap = new Map(); // callId → lock acquisition timestamp
-
-function isCallLocked(callId) {
-  return callLockMap.has(callId);
-}
+// ─── PER-CALL PROCESSING LOCK ─────────────────────────────────────────────────
+const activeCallProcessing = new Map();
 function acquireLock(callId) {
-  if (isCallLocked(callId)) return false;
-  callLockMap.set(callId, Date.now());
+  const now = Date.now();
+  const last = activeCallProcessing.get(callId);
+  if (last && now - last < 300) return false;
+  activeCallProcessing.set(callId, now);
   return true;
 }
-function releaseLock(callId) {
-  callLockMap.delete(callId);
-}
-
-// Safety cleanup — remove locks stuck for over 15 seconds (handles unhandled exceptions
-// that bypass the finally block, preventing calls from getting permanently locked out)
+function releaseLock(callId) { activeCallProcessing.delete(callId); }
 setInterval(() => {
   const now = Date.now();
-  for (const [id, acquiredAt] of callLockMap.entries()) {
-    if (now - acquiredAt > 15000) {
-      console.warn(`⚠️  Stale lock detected for ${id}, releasing`);
-      callLockMap.delete(id);
-    }
+  for (const [id, ts] of activeCallProcessing.entries()) {
+    if (now - ts > 10000) activeCallProcessing.delete(id);
   }
-}, 10000);
-
-// ─── COMMON ARABIC NAMES TRANSLITERATION MAP ─────────────────────────────────
-// Handles ~90% of common names locally — no API call needed for these.
-const ARABIC_NAME_MAP = {
-  "محمد": "Mohammad", "محمود": "Mahmoud", "أحمد": "Ahmad", "خالد": "Khaled",
-  "عمر": "Omar", "علي": "Ali", "يوسف": "Youssef", "إبراهيم": "Ibrahim",
-  "سارة": "Sara", "سمر": "Samar", "فاطمة": "Fatima", "نور": "Nour",
-  "ريم": "Reem", "لينا": "Lina", "هنا": "Hana", "رنا": "Rana",
-  "مريم": "Mariam", "دانا": "Dana", "مي": "May", "رنين": "Ranin",
-  "عبدالله": "Abdullah", "عبد الله": "Abdullah", "عبدالرحمن": "AbdulRahman",
-  "عبد الرحمن": "AbdulRahman", "حسن": "Hassan", "حسين": "Hussein",
-  "راشد": "Rashed", "سلطان": "Sultan", "زياد": "Ziad", "طارق": "Tarek",
-  "كريم": "Karim", "وليد": "Walid", "ماجد": "Majed", "فيصل": "Faisal",
-  "سعد": "Saad", "نادر": "Nader", "جاد": "Jad", "تامر": "Tamer",
-  "آدم": "Adam", "ياسر": "Yaser", "سامي": "Sami", "نبيل": "Nabil",
-  "منى": "Mona", "هدى": "Hoda", "آية": "Aya", "أية": "Aya",
-  "شيماء": "Shaimaa", "إيمان": "Eman", "أميرة": "Amira", "نادية": "Nadia",
-  "هيفاء": "Haifa", "رولا": "Rola", "ميساء": "Maisa", "ديما": "Dima",
-  "صالح": "Saleh", "جاسم": "Jasem", "بدر": "Badr", "منصور": "Mansour",
-  "ناصر": "Nasser", "عادل": "Adel", "نزار": "Nizar", "غسان": "Ghassan",
-  "روان": "Rawan", "جوري": "Jouri", "ميرنا": "Mirna", "ربى": "Ruba",
-  "لارا": "Lara", "رهف": "Rahaf", "غلا": "Ghala", "شذى": "Shatha",
-};
+}, 30000);
 
 // ─── LANGUAGE DETECTION ───────────────────────────────────────────────────────
+// Detects if text contains Arabic characters
 function containsArabic(text) {
   if (!text) return false;
   return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(text);
 }
 
+// Detects language from text — returns "ar" or "en"
 function detectLanguage(text) {
   if (!text?.trim()) return null;
   if (containsArabic(text)) return "ar";
-  // Arabic words written in English (transliterated) — expanded list
-  const arabicTransliterated = /\b(marhaba|ahlan|salam|habibi|yalla|shukran|min fadlak|mumkin|biddi|areed|tayeb|mabrook|inshallah|wallah|khalas|yani|la2|tab3an|akid|wein|kifak|keefak|shu|hala|tislam|mashy|maashi|walla|3andi|fi shi|ma fi|hada|ana|inta|beddi|bidi|rooh|jai|tayeb|tamam|mafi|leish|mazboot|zain|mashi|habibi|habibti|3azizi)\b/i;
+  // Arabic words written in English (transliterated)
+  const arabicTransliterated = /\b(marhaba|ahlan|salam|habibi|yalla|shukran|min fadlak|mumkin|biddi|areed|tayeb|mabrook|inshallah|wallah)\b/i;
   if (arabicTransliterated.test(text)) return "ar";
   return "en";
-}
-
-// Detects if text is likely a code-switch (Arabic + English mixed)
-function isCodeSwitched(text) {
-  if (!text) return false;
-  const hasArabic  = containsArabic(text);
-  const hasEnglish = /[a-zA-Z]{2,}/.test(text);
-  return hasArabic && hasEnglish;
 }
 
 // ─── BILINGUAL RESPONSES — Levantine Street Arabic ───────────────────────────
 const R = {
   // Greetings / Generic
   howCanIHelp:        { en: "How can I help you today?",                                ar: "شو بقدر أساعدك؟" },
-  somethingWrong:     { en: "Sorry, something went wrong.",                             ar: "صار في مشكلة صغيرة، جرب مرة ثانية." },
-  oneMovement:        { en: "One moment please...",                                     ar: "لحظة..." },
+  somethingWrong:     { en: "Sorry, something went wrong.",                             ar: "في مشكلة صغيرة، حاول مرة ثانية." },
+  oneMovement:        { en: "One moment please...",                                     ar: "لحظة معي..." },
   goodbye:            { en: "Thank you for calling! Have a wonderful day. Goodbye!",    ar: "يسلموا على اتصالك! يوم سعيد، مع السلامة!" },
   anythingElse:       { en: "Is there anything else I can help you with?",              ar: "في شي ثاني بقدر أساعدك فيه؟" },
   sorryDidntCatch:    { en: "Sorry, I didn't catch that.",                              ar: "معلش، ما سمعتك منيح، ممكن تعيد؟" },
@@ -219,35 +161,19 @@ function translateOrderType(type, lang) {
 }
 
 // ─── ARABIC NAME TRANSLITERATION ──────────────────────────────────────────────
-// 1. Check local map first (instant, no API cost)
-// 2. Fall back to OpenAI only for unknown names
+// Converts Arabic name to English equivalent for MongoDB storage
 async function transliterateToEnglish(arabicText) {
   if (!arabicText || !containsArabic(arabicText)) return arabicText;
-
-  // Try local map first — covers ~90% of common Arabic names
-  const trimmed = arabicText.trim();
-  if (ARABIC_NAME_MAP[trimmed]) return ARABIC_NAME_MAP[trimmed];
-
-  // Check if any map key is a substring match (handles "محمد علي" etc.)
-  for (const [ar, en] of Object.entries(ARABIC_NAME_MAP)) {
-    if (trimmed.startsWith(ar)) {
-      const rest = trimmed.slice(ar.length).trim();
-      const restEn = ARABIC_NAME_MAP[rest] || rest;
-      return restEn ? `${en} ${restEn}`.trim() : en;
-    }
-  }
-
-  // Fall back to OpenAI for unknown names — use gpt-4o-mini (faster + cheaper)
   try {
-    const response = await fetchWithRetry("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        max_tokens: 30,
+        model: "gpt-4o",
+        max_tokens: 50,
         temperature: 0,
         messages: [{
           role: "user",
@@ -260,20 +186,6 @@ async function transliterateToEnglish(arabicText) {
     return result || arabicText;
   } catch {
     return arabicText;
-  }
-}
-
-// ─── FETCH WITH RETRY (1 retry on network failure) ────────────────────────────
-async function fetchWithRetry(url, options, retries = 1) {
-  try {
-    const res = await fetch(url, options);
-    return res;
-  } catch (err) {
-    if (retries > 0) {
-      await new Promise(r => setTimeout(r, 200));
-      return fetchWithRetry(url, options, retries - 1);
-    }
-    throw err;
   }
 }
 
@@ -309,10 +221,9 @@ function findMenuItem(menu, itemName) {
   found = menu.find(m => m.name.toLowerCase().includes(name) || name.includes(m.name.toLowerCase()));
   if (found) return found;
   // 3. Word overlap match — at least one word in common
-  // FIXED: was /s+/ (bug) — now correctly /\s+/
-  const searchWords = name.split(/\s+/).filter(w => w.length > 2);
+  const searchWords = name.split(/s+/).filter(w => w.length > 2);
   found = menu.find(m => {
-    const menuWords = m.name.toLowerCase().split(/\s+/);
+    const menuWords = m.name.toLowerCase().split(/s+/);
     return searchWords.some(sw => menuWords.some(mw => mw.includes(sw) || sw.includes(mw)));
   });
   return found || null;
@@ -358,7 +269,7 @@ function buildSystemPrompt(agent, lang) {
 - بتحكي عربي شامي عامي — مش فصحى ومش رسمي أبداً
 - أسلوبك طبيعي ومريح مثل شخص بيساعد صديقه
 - ممكن تخلط إنجليزي بعربي بشكل طبيعي: "الـ order جاهز"، "شو بدك تـ order؟"، "الـ delivery رايح يوصلك"، "الـ total كم؟"
-- بتفهم خليجي وشامي ومصري وبترد بشامي دائماً
+- بتفهم خليجي وشامي وبترد بشامي دائماً
 - بتفهم جمل مخلوطة: "بدي delivery"، "متى رح يوصل الـ order؟"، "بدي أحجز table"
 - ردودك قصيرة ومباشرة — مو خطب طويلة
 - دافي ومرحّب بشكل طبيعي مو مبالغ فيه
@@ -424,11 +335,11 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
 
   const langNote = lang === "ar"
     ? `The customer is speaking Arabic (possibly mixed with English). You MUST:
-- Understand BOTH Gulf Arabic (يبي، أبغى، وين، كيف حالك) AND Levantine Arabic (بدي، وين، كيفك، يلا، ماشي) AND Egyptian Arabic (عايز، إيه، ازيك) — respond in Levantine only
+- Understand BOTH Gulf Arabic (يبي، أبغى، وين، كيف حالك) AND Levantine Arabic (بدي، وين، كيفك، يلا، ماشي) — respond in Levantine only
 - Understand mixed sentences naturally: "بدي delivery"، "متى رح يوصل الـ order؟"، "بدي اطلب pickup"، "كم الـ total؟"، "في شي بالـ menu؟"
 - English words inside Arabic are normal: order، delivery، pickup، total، menu، table، booking — extract them correctly
 - Understand Arabic numbers: واحد=1, اثنين=2, ثلاثة=3, أربعة=4, خمسة=5, ستة=6, سبعة=7, ثمانية=8, تسعة=9, عشرة=10
-- Understand Arabic time: "الساعة سبعة" = 7:00, "الساعة سبعة ونص" = 7:30, "بعد ساعة" = in 1 hour, "بعد نص ساعة" = in 30 minutes, "بعد ربع ساعة" = in 15 minutes
+- Understand Arabic time: "الساعة سبعة" = 7:00, "الساعة سبعة ونص" = 7:30, "بعد ساعة" = in 1 hour, "بعد نص ساعة" = in 30 minutes
 - Understand order types in any form:
   * delivery: "توصيل"، "يوصلوا"، "delivery"، "بدي delivery"، "دليفري"
   * pickup: "استلام"، "آخذه"، "pickup"، "أجي آخذه"، "تيك اواي"
@@ -512,15 +423,14 @@ Respond ONLY with valid JSON (no markdown):
 }`;
 
   try {
-    // SPEED: Use gpt-4o-mini for extraction — same accuracy for structured tasks, ~3x faster
-    const response = await fetchWithRetry("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        model: "gpt-4o",
         max_tokens: 500,
         temperature: 0.2,
         messages: [{ role: "user", content: prompt }],
@@ -622,12 +532,6 @@ async function processLLMMessage(body, req) {
   }
   if (!callId) return { response: "Sorry, something went wrong." };
 
-  // Enforce per-call lock — drop duplicate rapid-fire events
-  if (!acquireLock(callId)) {
-    console.log(`⏭ Skipping duplicate rapid event for ${callId}`);
-    return null;
-  }
-
   // Note: deduplication is handled in llmSocket.js via response_id tracking
 
   try {
@@ -643,8 +547,8 @@ async function _processMessage(body, req, callId) {
   const freshCall = await Call.findOne({ $or: [{ callId }, { call_id: callId }] }).lean();
   if (!freshCall) return { response: "Sorry, something went wrong." };
 
-  // ── LOAD AGENT (in-memory cached, 5 min TTL) ──────────────
-  const agent = await getCachedAgent(freshCall.agentId);
+  // ── LOAD AGENT ────────────────────────────────────────────
+  const agent = await Agent.findById(freshCall.agentId).lean();
   if (!agent) return { response: "Sorry, something went wrong." };
 
   // ── PHONE ─────────────────────────────────────────────────
@@ -679,12 +583,9 @@ async function _processMessage(body, req, callId) {
   const hasArabicChars = /[\u0600-\u06FF]/.test(latestUserText);
 
   // Short English fillers that may appear during an Arabic conversation
-  const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh|yep|nah|cool|nice|done|got it|got ya)[\s\.\!\?]*$/i.test(latestUserText.trim());
+  const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh)[\s\.\!\?]*$/i.test(latestUserText.trim());
 
-  // Code-switched input (Arabic + English together) — always treat as Arabic
-  const isMixed = isCodeSwitched(latestUserText);
-
-  if (hasArabicChars || isMixed) {
+  if (hasArabicChars) {
     lang = "ar";
   } else if (detectedNow === "en" && isEnglishFiller && storedLang === "ar") {
     lang = "ar"; // short English filler during Arabic conversation — stay Arabic
@@ -697,7 +598,8 @@ async function _processMessage(body, req, callId) {
   }
 
   // Explicit switch requests always override
-  const explicitArabic  = /تكلم عربي|بالعربي|عربي بس|كلمني عربي/i.test(latestUserText);
+  const explicitArabic  = /تكلم عربي|بالعربي|عربي بس|كلمني عربي/i.test(latestUserText) ||
+    /\b(speak arabic|talk arabic|in arabic|arabic please|switch to arabic|talk in arabic|speak in arabic)\b/i.test(latestUserText);
   const explicitEnglish = /\b(speak english|in english|english please|talk english|switch to english)\b/i.test(latestUserText);
   if (explicitArabic)  lang = "ar";
   if (explicitEnglish) lang = "en";
@@ -706,13 +608,13 @@ async function _processMessage(body, req, callId) {
   if (lang !== storedLang) {
     await Call.updateOne({ _id: freshCall._id }, { $set: { "meta.lang": lang } });
   }
-  console.log(`🌐 Language: ${lang} (hasArabic: ${hasArabicChars}, mixed: ${isMixed}, stored: ${storedLang || "none"}, default: ${agentDefaultLang})`);
+  console.log(`🌐 Language: ${lang} (hasArabic: ${hasArabicChars}, stored: ${storedLang || "none"}, default: ${agentDefaultLang})`);
 
   // ── FIRST TURN GREETING ───────────────────────────────────
   // Retell sends response_required before the customer speaks.
   // Return a clean one-line greeting immediately — no GPT call, no cutoff.
   const isFirstTurn = transcript.length === 0 || (transcript.length === 1 && transcript[0]?.role === "agent");
-  const isNoisyInput = !latestUserText || latestUserText.length < 3 || /^[.!?,،\s]+$/.test(latestUserText.trim());
+  const isNoisyInput = !latestUserText || latestUserText.length < 3 || /^[.!?,،s]+$/.test(latestUserText.trim());
 
   if (isFirstTurn && isNoisyInput && !storedLang) {
     const greeting = lang === "ar"
@@ -1261,14 +1163,14 @@ async function _processMessage(body, req, callId) {
           });
           const timeString   = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
           // Use Arabic item names in Arabic responses
-          const itemsSummary = orderDraft.items.map(i => {
-            if (lang === 'ar') {
-              const menuItem = agent.menu?.find(m => m.name.toLowerCase() === i.name.toLowerCase());
-              const arabicName = menuItem?.nameAr || menuItem?.arabicName || i.name;
-              return `${arabicName} x${i.quantity || 1}`;
-            }
-            return `${i.name} x${i.quantity || 1}`;
-          }).join(", ");
+      const itemsSummary = orderDraft.items.map(i => {
+        if (lang === 'ar') {
+          const menuItem = agent.menu?.find(m => m.name.toLowerCase() === i.name.toLowerCase());
+          const arabicName = menuItem?.nameAr || menuItem?.arabicName || i.name;
+          return `${arabicName} x${i.quantity || 1}`;
+        }
+        return `${i.name} x${i.quantity || 1}`;
+      }).join(", ");
           console.log("✅ Dine-in confirmed");
           return { response: t("orderConfirmedDineIn", lang, draft.partySize, timeString, displayName, itemsSummary, total) };
         }
