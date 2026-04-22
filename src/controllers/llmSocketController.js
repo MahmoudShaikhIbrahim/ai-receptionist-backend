@@ -19,22 +19,39 @@ async function getCachedAgent(agentId) {
   return agent;
 }
 
-// ─── PER-CALL PROCESSING LOCK ─────────────────────────────────────────────────
-const activeCallProcessing = new Map();
+// ─── PER-CALL PROCESSING LOCK (Promise-based) ────────────────────────────────
+// Stays locked for the ENTIRE async processing duration, not just N milliseconds.
+// This prevents Retell's incremental ASR transcript updates from firing multiple
+// parallel OpenAI calls and sending multiple responses back for the same user turn.
+//
+// Retell streams partial transcripts as separate response_required events, each
+// arriving ~500ms-1000ms apart. A timestamp lock of 300ms is far too short.
+// A promise lock holds until the current _processMessage() fully resolves.
+const callLockMap = new Map(); // callId → lock acquisition timestamp
+
+function isCallLocked(callId) {
+  return callLockMap.has(callId);
+}
 function acquireLock(callId) {
-  const now = Date.now();
-  const last = activeCallProcessing.get(callId);
-  if (last && now - last < 300) return false;
-  activeCallProcessing.set(callId, now);
+  if (isCallLocked(callId)) return false;
+  callLockMap.set(callId, Date.now());
   return true;
 }
-function releaseLock(callId) { activeCallProcessing.delete(callId); }
+function releaseLock(callId) {
+  callLockMap.delete(callId);
+}
+
+// Safety cleanup — remove locks stuck for over 15 seconds (handles unhandled exceptions
+// that bypass the finally block, preventing calls from getting permanently locked out)
 setInterval(() => {
   const now = Date.now();
-  for (const [id, ts] of activeCallProcessing.entries()) {
-    if (now - ts > 10000) activeCallProcessing.delete(id);
+  for (const [id, acquiredAt] of callLockMap.entries()) {
+    if (now - acquiredAt > 15000) {
+      console.warn(`⚠️  Stale lock detected for ${id}, releasing`);
+      callLockMap.delete(id);
+    }
   }
-}, 30000);
+}, 10000);
 
 // ─── COMMON ARABIC NAMES TRANSLITERATION MAP ─────────────────────────────────
 // Handles ~90% of common names locally — no API call needed for these.
@@ -622,12 +639,11 @@ async function processLLMMessage(body, req) {
 
 async function _processMessage(body, req, callId) {
 
-  // ── LOAD CALL + AGENT IN PARALLEL ────────────────────────
-  // SPEED: Both queries are independent — run them simultaneously
+  // ── LOAD CALL ─────────────────────────────────────────────
   const freshCall = await Call.findOne({ $or: [{ callId }, { call_id: callId }] }).lean();
   if (!freshCall) return { response: "Sorry, something went wrong." };
 
-  // ── LOAD AGENT (cached) ───────────────────────────────────
+  // ── LOAD AGENT (in-memory cached, 5 min TTL) ──────────────
   const agent = await getCachedAgent(freshCall.agentId);
   if (!agent) return { response: "Sorry, something went wrong." };
 
