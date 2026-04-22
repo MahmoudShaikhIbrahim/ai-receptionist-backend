@@ -55,6 +55,9 @@ function handleLLMWebSocket(ws, req) {
   // Last sent response per call — used to re-send if Retell asks again
   let lastResponseText = null;
   let lastResponseId   = null;
+  // Dedup by user text — if same text is sent twice quickly, only process once
+  let lastProcessedText = null;
+  let lastProcessedTextTime = 0;
 
   // Send initial greeting dynamically from agent settings
   // Extract callId from URL path e.g. /llm/respond/call_xxx
@@ -173,6 +176,37 @@ function handleLLMWebSocket(ws, req) {
           end_call: false,
         });
         return;
+      }
+
+      // Smart dedup: Retell sends multiple response_required events as transcript builds.
+      // Wait 400ms to see if a longer/updated version arrives before processing.
+      const now = Date.now();
+
+      // If this text ends mid-sentence (cut off by transcriber), wait briefly
+      const looksIncomplete = latestUserText && (
+        /[،,،]$/.test(latestUserText.trim()) ||           // ends with comma
+        /(بدي|بس|و|ال|آه|أنا|في|من|على|عم)$/i.test(latestUserText.trim()) || // ends with Arabic continuation word
+        latestUserText.trim().length < 8                  // very short — likely partial
+      );
+
+      if (looksIncomplete) {
+        // Wait to see if more arrives
+        await new Promise(r => setTimeout(r, 500));
+        // If we got superseded by a newer response_id, skip this one
+        if (processedResponseIds.has(responseId) || inFlightResponseIds.has(responseId)) {
+          return;
+        }
+      }
+
+      // Skip if same text was processed very recently (within 3s)
+      if (latestUserText && latestUserText === lastProcessedText && now - lastProcessedTextTime < 3000) {
+        console.log(`⏭ Skipping duplicate text: "${latestUserText.slice(0,40)}"`);
+        processedResponseIds.add(responseId);
+        return;
+      }
+      if (latestUserText) {
+        lastProcessedText = latestUserText;
+        lastProcessedTextTime = now;
       }
 
       // Mark as in-flight

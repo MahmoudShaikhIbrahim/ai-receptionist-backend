@@ -382,7 +382,13 @@ STRICT RULES:
   * English delivery: "delivery", "deliver it", "bring it to me" = "delivery"
   * English pickup: "pickup", "pick up", "collect", "take away" = "pickup"
   * English dineIn: "dine in", "eat here", "eat at the restaurant" = "dineIn" (ONLY with food items)
-- For names: extract the name exactly as spoken (Arabic or English). Store as-is.
+- For names: extract ONLY proper names (محمود، سارة، Ahmed، etc). Store as-is.
+- CRITICAL: NEVER extract sentences or phrases as names. These are NOT names:
+  * "أنا لسه حاكيلك" — this means "I'm still talking to you", NOT a name
+  * "لسه" / "بس" / "آه" / "حاكيلك" — filler words, NOT names
+  * Any phrase longer than 3 words is almost certainly NOT a name
+  * Sentences starting with "أنا" (I) are NEVER names
+  * If you're unsure, return null for name
 - CRITICAL: Words like أشخاص، شخص، ناس are party size words NOT names. Numbers like أربعة، ثلاثة are NOT names.
 - For Arabic numbers in party size: convert to integer (ثلاثة = 3, أربعة = 4, etc.)
 - For addresses (CRITICAL):
@@ -924,15 +930,18 @@ async function _processMessage(body, req, callId) {
       return { response: t("goodbye", lang), end_call: true };
     }
     if (looksLikeOrderIntent(latestUserText) && !modifyIntent && !cancelIntent) {
-      orderDraft = { items: [], orderType: null, status: null, deliveryAddress: null };
+      // Reset order draft and fall through to active flow — don't return "anything else?"
+      orderDraft = { items: [], orderType: null, status: null, deliveryAddress: null, notes: null };
       await Call.updateOne({ _id: freshCall._id }, {
         $set: {
           "orderDraft.items":           [],
           "orderDraft.orderType":       null,
           "orderDraft.status":          null,
           "orderDraft.deliveryAddress": null,
+          "orderDraft.notes":           null,
         }
       });
+      // Fall through — don't return, let the active flow handle it immediately
     } else if (looksLikeBookingIntent(latestUserText)) {
       draft.customerName = null;
       await Call.updateOne({ _id: freshCall._id }, { $set: { "bookingDraft.customerName": null } });
@@ -947,21 +956,27 @@ async function _processMessage(body, req, callId) {
         orderDraft.orderType       = existingOrder.orderType;
         orderDraft.deliveryAddress = mentionsAddress ? null : existingOrder.deliveryAddress;
         orderDraft.status          = null;
+        // CRITICAL: preserve the customer name — do NOT clear it on address correction
+        if (existingOrder.customerName && !draft.customerName) {
+          draft.customerName = existingOrder.customerName;
+        }
         await Call.updateOne({ _id: freshCall._id }, {
           $set: {
             "orderDraft.items":           existingOrder.items,
             "orderDraft.orderType":       existingOrder.orderType,
             "orderDraft.deliveryAddress": mentionsAddress ? null : existingOrder.deliveryAddress,
             "orderDraft.status":          null,
+            // Restore customer name if we have it
+            ...(existingOrder.customerName ? { "bookingDraft.customerName": existingOrder.customerName } : {}),
           }
         });
-        if (mentionsAddress) return { response: t("askNewAddress", lang) };
+        if (mentionsAddress) return { response: lang === "ar" ? "آسف على ذلك! شو العنوان الصحيح؟ رقم الشقة، اسم البرج، المنطقة." : "Sorry! What's the correct address?" };
       }
     } else {
       const existingOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 });
 
       // Check if customer is correcting the address
-      const mentionsAddressCorrection = /غلط|مو صح|مش صح|لا مو|لأ مو|لا اصلاً|no it's|wrong|not right|actually|it's in|انها في|هي في|في الشارقة|في دبي|في ابوظبي|في عجمان/i.test(latestUserText);
+      const mentionsAddressCorrection = /غلط|مو صح|مش صح|لا مو|لأ مو|لا اصلاً|مش كذا|مش هيك|العنوان غلط|no it's|wrong|not right|actually|it's in|انها في|هي في|في الشارقة|في دبي|في ابوظبي|في عجمان|في عجمان|بدل|حط بدل|غير ال|replace|change.*address|عنوان ثاني|عنوان جديد/i.test(latestUserText);
       if (mentionsAddressCorrection && existingOrder) {
         const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
         if (mins <= 5) {
