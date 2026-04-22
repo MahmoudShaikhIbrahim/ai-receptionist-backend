@@ -361,7 +361,7 @@ ${langNote}
 
 Current state:
 - Booking: people=${currentDraft.partySize ?? "not collected"}, time=${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true,timeZone:"Asia/Dubai"}) : "not collected"}, name=${currentDraft.customerName ?? "not collected"}
-- Order: items=${orderDraft.items?.length > 0 ? orderDraft.items.map(i=>`${i.name}x${i.quantity}`).join(",") : "none"}, type=${orderDraft.orderType ?? "not set"}, address=${orderDraft.deliveryAddress ?? "not collected"}
+- Order: items=${orderDraft.items?.length > 0 ? orderDraft.items.map(i=>`${i.name}x${i.quantity}${i.notes ? "("+i.notes+")" : ""}`).join(",") : "none"}, type=${orderDraft.orderType ?? "not set"}, address=${orderDraft.deliveryAddress ?? "not collected"}, notes=${orderDraft.notes ?? "none"}
 ${returningInfo}
 
 ${menuText}
@@ -394,12 +394,18 @@ STRICT RULES:
   * Extract apartment numbers, floor numbers, villa numbers — they are part of the address
   * Common UAE areas: JVC, JBR, Marina, Downtown, Deira, Sharjah, Abu Dhabi, الخان, الميدان, etc.
   * From building name you can infer the city/area — include it in the address
-- For item notes (CRITICAL):
-  * Extract ANY customization the customer mentions for a specific item
-  * "بدون خضار" = no vegetables, "بدون بصل" = no onions, "extra sauce" = extra sauce, "حار" = spicy
-  * These go in the item's "notes" field, NOT in the order notes
-  * If customer says notes AFTER confirming items, attach them to the relevant item
-- For order notes: general instructions not specific to one item (e.g. "اطرق الباب مرتين", "اتصل لما توصل")
+- For item notes (CRITICAL — accept at ANY point in the conversation):
+  * Extract ANY customization the customer mentions for a specific item AT ANY TIME
+  * "بدون خضار" = no vegetables, "بدون بصل" = no onions, "extra sauce" = extra sauce, "حار" = spicy, "بدون جبن" = no cheese
+  * These go in the item's "notes" field — update the relevant item even if it was mentioned earlier
+  * Customer can say notes BEFORE or AFTER giving their name/address/time — always extract them
+  * If customer says "بدون خضار" for shawarma, set shawarma's notes = "no vegetables"
+  * NEVER ignore customization requests — they are always important
+- For address corrections (CRITICAL):
+  * If customer says the address is wrong or gives a correction ("لا مو صح"، "غلط"، "actually it's in Sharjah"، "هي في الشارقة"), extract the CORRECTED address
+  * Always prefer the most recent address the customer gives
+  * When customer corrects city/area, update the full address with the correct city
+- For order notes: general instructions not specific to one item (e.g. "اطرق الباب مرتين", "اتصل لما توصل", "leave at the door")
 - Never ask for phone number
 - Never mention dates, only times
 - CRITICAL: NEVER return a confirmation message in your response. The system handles confirmations.
@@ -952,17 +958,41 @@ async function _processMessage(body, req, callId) {
         if (mentionsAddress) return { response: t("askNewAddress", lang) };
       }
     } else {
-      // Check if customer is adding notes/customizations to confirmed order
-      const mentionsNotes = /بدون|بدو|without|no |extra|حار|spicy|اضافي|خضار|بصل|جبن|صوص|sauce|cheese|onion|vegg/i.test(latestUserText);
-      if (mentionsNotes) {
-        // Extract notes and attach to the existing order
-        const existingOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 });
-        if (existingOrder) {
+      const existingOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 });
+
+      // Check if customer is correcting the address
+      const mentionsAddressCorrection = /غلط|مو صح|مش صح|لا مو|لأ مو|لا اصلاً|no it's|wrong|not right|actually|it's in|انها في|هي في|في الشارقة|في دبي|في ابوظبي|في عجمان/i.test(latestUserText);
+      if (mentionsAddressCorrection && existingOrder) {
+        const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
+        if (mins <= 5) {
+          // Re-open the order flow to collect corrected address
+          orderDraft.items           = existingOrder.items;
+          orderDraft.orderType       = existingOrder.orderType;
+          orderDraft.deliveryAddress = null; // clear wrong address
+          orderDraft.status          = null;
+          await Call.updateOne({ _id: freshCall._id }, {
+            $set: {
+              "orderDraft.items":           existingOrder.items,
+              "orderDraft.orderType":       existingOrder.orderType,
+              "orderDraft.deliveryAddress": null,
+              "orderDraft.status":          null,
+            }
+          });
+          return { response: lang === "ar" ? "آسف على ذلك! شو العنوان الصحيح؟ رقم الشقة، اسم البرج، المنطقة والمدينة." : "Sorry about that! What's the correct address? Apartment number, building name, area and city." };
+        }
+      }
+
+      // Check if customer is adding notes/customizations
+      const mentionsNotes = /بدون|بدو|without|no |extra|حار|spicy|اضافي|خضار|بصل|جبن|صوص|sauce|cheese|onion|vegg|notes|ملاحظة/i.test(latestUserText);
+      if (mentionsNotes && existingOrder) {
+        const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
+        if (mins <= 5) {
           const currentNotes = existingOrder.notes ? existingOrder.notes + ". " + latestUserText : latestUserText;
           await Order.updateOne({ _id: existingOrder._id }, { $set: { notes: currentNotes } });
           return { response: lang === "ar" ? "تمام، أضفنا ملاحظتك. في شي ثاني؟" : "Got it! Added your notes. Anything else?" };
         }
       }
+
       return { response: t("anythingElse", lang) };
     }
   }
@@ -1403,4 +1433,5 @@ async function _processMessage(body, req, callId) {
     ...(aiSaysGoodbye ? { end_call: true } : {}),
   };
 }
+
 module.exports = { processLLMMessage };
