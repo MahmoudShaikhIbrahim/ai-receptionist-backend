@@ -1403,5 +1403,4 @@ async function _processMessage(body, req, callId) {
     ...(aiSaysGoodbye ? { end_call: true } : {}),
   };
 }
-
 module.exports = { processLLMMessage };
