@@ -399,14 +399,18 @@ STRICT RULES:
 - CRITICAL: Words like أشخاص، شخص، ناس are party size words NOT names. Numbers like أربعة، ثلاثة are NOT names.
 - For Arabic numbers in party size: convert to integer (ثلاثة = 3, أربعة = 4, etc.)
 - For addresses (CRITICAL):
-  * NEVER save a partial address. "الميدان" alone is NOT enough — ask for building name and unit number.
-  * A complete delivery address must have: area/neighborhood + building name + apartment/unit number
-  * Format: "unit, building, area, city" e.g. "302, Binghatti Heights, JVC, Dubai"
-  * If customer gives only area ("الميدان", "JVC"), ask: "شو اسم البرج؟ ورقم الشقة؟"
-  * If customer gives area + building but no unit, ask: "رقم الشقة؟"
-  * Extract apartment numbers, floor numbers, villa numbers — they are part of the address
-  * Common UAE areas: JVC, JBR, Marina, Downtown, Deira, Sharjah, Abu Dhabi, الخان, الميدان, etc.
-  * From building name you can infer the city/area — include it in the address
+  * Be LENIENT — save whatever the customer gives. Do NOT keep asking for info already provided.
+  * Format: "unit, building, area, city" e.g. "206, Al Maidan Al Sakani, Al Khan, Sharjah"
+  * ARABIC NUMBER WORDS → must convert to digits in addresses:
+    - واحد=1, اثنين=2, ثلاثة=3, عشرة=10, عشرين=20, ثلاثين=30, أربعين=40, خمسين=50
+    - مية=100, ميه=100, مئة=100, مئتين=200, متين=200, ثلاثمية=300, أربعمية=400, خمسمية=500
+    - "متين وستة" = 206, "مية وعشرين" = 120, "ثلاثمية وخمسة" = 305
+  * Building names: "الميدان السكني"="Al Maidan Al Sakani", "بناية X"="Building X", "برج X"="Tower X"
+  * Common UAE areas: JVC, JBR, Marina, Downtown, Deira, Sharjah, Abu Dhabi, الخان=Al Khan, الميدان=Al Maidan
+  * Only ask for MORE info if customer gave NOTHING at all (just "somewhere in Dubai" with no building)
+  * If customer gave building name + unit number → SAVE IT immediately, even without city
+  * If customer gave area + building → SAVE IT, ask unit number only once
+  * NEVER return null if the customer gave a building name and/or unit number
 - For item notes (CRITICAL — accept at ANY point in the conversation):
   * Extract ANY customization the customer mentions for a specific item AT ANY TIME
   * "بدون خضار" = no vegetables, "بدون بصل" = no onions, "extra sauce" = extra sauce, "حار" = spicy, "بدون جبن" = no cheese
