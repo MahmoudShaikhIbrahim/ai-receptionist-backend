@@ -47,7 +47,7 @@ const R = {
   howCanIHelp:        { en: "How can I help you today?",                                ar: "شو بدك؟" },
   somethingWrong:     { en: "Sorry, something went wrong.",                             ar: "في مشكلة، حاول مرة ثانية." },
   oneMovement:        { en: "One moment please...",                                     ar: "لحظة..." },
-  goodbye:            { en: "Thank you for calling! Have a wonderful day. Goodbye!",    ar: "يسلموا على اتصالك! يوم سعيد، مع السلامة!" },
+  goodbye:            { en: "Thanks for calling! Take care!",    ar: null }, // handled dynamically below
   anythingElse:       { en: "Is there anything else I can help you with?",              ar: "في شي ثاني؟" },
   sorryDidntCatch:    { en: "Sorry, I didn't catch that.",                              ar: "ما سمعتك، عيد معي؟" },
 
@@ -413,10 +413,14 @@ STRICT RULES:
   * NEVER return null if the customer gave a building name and/or unit number
 - For item notes (CRITICAL — accept at ANY point in the conversation):
   * Extract ANY customization the customer mentions for a specific item AT ANY TIME
-  * "بدون خضار" = no vegetables, "بدون بصل" = no onions, "extra sauce" = extra sauce, "حار" = spicy, "بدون جبن" = no cheese
+  * Store notes as SHORT KEYWORDS ONLY — not full sentences. The kitchen needs quick instructions.
+  * Examples of CORRECT notes: "بدون خضار", "no onions", "extra sauce", "حار", "بدون جبن", "well done"
+  * Examples of WRONG notes: "هل يمكن الشاورما بدون خضار؟", "the customer wants no vegetables please", "Can the shawarma be without vegetables?"
+  * If customer says "ممكن الشاورما بدون خضار؟" → notes = "بدون خضار"
+  * If customer says "بدون بصل وبدون خضار" → notes = "بدون بصل، بدون خضار"
+  * If customer says "can you make it spicy" → notes = "spicy"
+  * STRIP all question words, polite phrases, and filler — keep ONLY the instruction itself
   * These go in the item's "notes" field — update the relevant item even if it was mentioned earlier
-  * Customer can say notes BEFORE or AFTER giving their name/address/time — always extract them
-  * If customer says "بدون خضار" for shawarma, set shawarma's notes = "no vegetables"
   * NEVER ignore customization requests — they are always important
 - For address corrections (CRITICAL):
   * If customer says the address is wrong or gives a correction ("لا مو صح"، "غلط"، "actually it's in Sharjah"، "هي في الشارقة"), extract the CORRECTED address
@@ -515,8 +519,9 @@ function looksLikeGoodbye(text, transcript, orderConfirmed, bookingConfirmed) {
   // 1. Something was confirmed (order or booking) — most reliable signal
   // 2. OR conversation is substantial (8+ turns) AND no new intent in message
   const softGoodbye =
-    /\b(thank you|thanks)\b/i.test(text) ||
-    /^لا[،,]?\s*شكر/i.test(text) || // "لا شكراً" at start of message
+    /\b(thank you|thanks|no thank|no thanks)\b/i.test(text) ||
+    /^لا[،,]?\s*شكر/i.test(text) ||
+    /^لا،?\s*مشكور/i.test(text) ||
     /يسلموا|يعطيك العافي[ةه]|الله يعافيك|تصبح على خير/.test(text);
 
   // "شكراً" alone — only goodbye if confirmed or very late in conversation
@@ -537,6 +542,28 @@ function looksLikeGoodbye(text, transcript, orderConfirmed, bookingConfirmed) {
   }
 
   return false;
+}
+
+// ─── DYNAMIC GOODBYE BUILDER ─────────────────────────────────────────────────
+// Mirrors the customer's goodbye style instead of always saying the same thing
+function buildGoodbye(text, lang) {
+  if (lang === "ar") {
+    if (/مع السلامة/i.test(text)) {
+      const options = ["حياك الله!", "الله يسلمك!", "شكراً، مع السلامة!"];
+      return options[Math.floor(Math.random() * options.length)];
+    }
+    if (/يعطيك العافية|الله يعافيك/i.test(text)) return "الله يعافيك!";
+    if (/شكر/i.test(text)) return "تسلم! مع السلامة.";
+    if (/باي|bye/i.test(text)) return "باي باي!";
+    if (/لا شكراً|لا، شكراً|no thank/i.test(text)) return "تسلم! مع السلامة.";
+    // default short Arabic goodbye
+    return "مع السلامة!";
+  } else {
+    if (/bye/i.test(text)) return "Bye!";
+    if (/thank/i.test(text)) return "Thanks! Take care!";
+    if (/no thank/i.test(text)) return "Sure! Take care!";
+    return "Take care! Goodbye!";
+  }
 }
 
 // ─── BOOKING ENGINE LOCK ──────────────────────────────────────────────────────
@@ -941,7 +968,12 @@ async function _processMessage(body, req, callId) {
   // ── ORDER CONFIRMED — handle next action ──────────────────
   if (orderDraft.status === "confirmed") {
     if (looksLikeGoodbye(latestUserText, transcript, orderDraft.status === "confirmed", !!justConfirmedBooking)) {
-      return { response: t("goodbye", lang), end_call: true };
+      return { response: buildGoodbye(latestUserText, lang), end_call: true };
+    }
+    // "لا" or "no" alone after confirmed order = goodbye
+    const isSimpleNo = /^(لا|no|nope|لأ)[s.!?،]*$/i.test(latestUserText.trim());
+    if (isSimpleNo) {
+      return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }
     if (looksLikeOrderIntent(latestUserText) && !modifyIntent && !cancelIntent) {
       // Reset order draft and fall through to active flow — don't return "anything else?"
@@ -1030,7 +1062,7 @@ async function _processMessage(body, req, callId) {
   if (bookingFlowActive || orderFlowActive || cancelIntent || modifyIntent) {
 
     if (looksLikeGoodbye(latestUserText, transcript, orderDraft.status === "confirmed", !!justConfirmedBooking)) {
-      return { response: t("goodbye", lang), end_call: true };
+      return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }
 
     const returningCtxString = returningContext ||
@@ -1434,7 +1466,7 @@ async function _processMessage(body, req, callId) {
 
   // ── GOODBYE ───────────────────────────────────────────────
   if (looksLikeGoodbye(latestUserText, transcript, orderDraft.status === "confirmed", !!justConfirmedBooking)) {
-    return { response: t("goodbye", lang), end_call: true };
+    return { response: buildGoodbye(latestUserText, lang), end_call: true };
   }
 
   // ── NOISE / FIRST TURN GUARD ──────────────────────────────
