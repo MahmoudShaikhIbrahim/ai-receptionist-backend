@@ -44,12 +44,12 @@ function detectLanguage(text) {
 // ─── BILINGUAL RESPONSES — Levantine Street Arabic ───────────────────────────
 const R = {
   // Greetings / Generic
-  howCanIHelp:        { en: "How can I help you today?",                                ar: "شو بقدر أساعدك؟" },
-  somethingWrong:     { en: "Sorry, something went wrong.",                             ar: "في مشكلة صغيرة، حاول مرة ثانية." },
-  oneMovement:        { en: "One moment please...",                                     ar: "لحظة معي..." },
+  howCanIHelp:        { en: "How can I help you today?",                                ar: "شو بدك؟" },
+  somethingWrong:     { en: "Sorry, something went wrong.",                             ar: "في مشكلة، حاول مرة ثانية." },
+  oneMovement:        { en: "One moment please...",                                     ar: "لحظة..." },
   goodbye:            { en: "Thank you for calling! Have a wonderful day. Goodbye!",    ar: "يسلموا على اتصالك! يوم سعيد، مع السلامة!" },
-  anythingElse:       { en: "Is there anything else I can help you with?",              ar: "في شي ثاني بقدر أساعدك فيه؟" },
-  sorryDidntCatch:    { en: "Sorry, I didn't catch that.",                              ar: "معلش، ما سمعتك منيح، ممكن تعيد؟" },
+  anythingElse:       { en: "Is there anything else I can help you with?",              ar: "في شي ثاني؟" },
+  sorryDidntCatch:    { en: "Sorry, I didn't catch that.",                              ar: "ما سمعتك، عيد معي؟" },
 
   // Booking
   bookingConfirmed:   (name, size, time) => ({
@@ -91,16 +91,16 @@ const R = {
   }),
 
   // Questions — Booking
-  askPartySize:       { en: "How many people will be joining?",          ar: "كم نفر رح يجوا؟" },
-  askTime:            { en: "What time works for you?",                  ar: "أي ساعة بتحب؟" },
-  askName:            { en: "What name should I put the booking under?", ar: "باسم مين الحجز؟" },
+  askPartySize:       { en: "How many people will be joining?",          ar: "كم نفر؟" },
+  askTime:            { en: "What time works for you?",                  ar: "أي ساعة؟" },
+  askName:            { en: "What name should I put the booking under?", ar: "باسم مين؟" },
   askOrderName:       { en: "What name should I put the order under?",   ar: "باسم مين الـ order؟" },
 
   // Questions — Order
-  askDeliveryAddress: { en: "What's the delivery address?",              ar: "وين بدك نوصّل؟" },
-  askPickupTime:      { en: "What time will you pick up?",               ar: "أي ساعة رح تيجي تاخد الـ order؟" },
+  askDeliveryAddress: { en: "What's the delivery address?",              ar: "وين بدنا نوصل؟" },
+  askPickupTime:      { en: "What time will you pick up?",               ar: "أي ساعة رح تيجي؟" },
   askDiningTime:      { en: "What time would you like to come?",         ar: "أي ساعة رح تيجوا؟" },
-  askDiningPeople:    { en: "How many people will be dining?",           ar: "كم نفر رح تأكلوا؟" },
+  askDiningPeople:    { en: "How many people will be dining?",           ar: "كم نفر؟" },
   askNewAddress:      { en: "Sure! What's the new delivery address?",    ar: "أكيد! شو العنوان الجديد؟" },
 
   // Returning caller
@@ -112,7 +112,7 @@ const R = {
     en: `Hey! ${msg} What can I do for you?`,
     ar: `هلا! ${msg} شو بقدر أساعدك؟`,
   }),
-  notYou:             { en: "My bad! How can I help you?",               ar: "آسف عليك! كيف بقدر أساعدك؟" },
+  notYou:             { en: "My bad! How can I help you?",               ar: "آسف! كيف بساعدك؟" },
 
   // Returning context
   returningBookingCtx: (size, time, name) => ({
@@ -172,7 +172,7 @@ async function transliterateToEnglish(arabicText) {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: "gpt-4o-mini",
         max_tokens: 50,
         temperature: 0,
         messages: [{
@@ -265,14 +265,18 @@ function buildSystemPrompt(agent, lang) {
 
 بتساعد الزبائن في: ${features.join("، ") || "الاستفسارات العامة"}.
 
-شخصيتك:
-- بتحكي عربي شامي عامي — مش فصحى ومش رسمي أبداً
-- أسلوبك طبيعي ومريح مثل شخص بيساعد صديقه
-- ممكن تخلط إنجليزي بعربي بشكل طبيعي: "الـ order جاهز"، "شو بدك تـ order؟"، "الـ delivery رايح يوصلك"، "الـ total كم؟"
-- بتفهم خليجي وشامي وبترد بشامي دائماً
-- بتفهم جمل مخلوطة: "بدي delivery"، "متى رح يوصل الـ order؟"، "بدي أحجز table"
-- ردودك قصيرة ومباشرة — مو خطب طويلة
-- دافي ومرحّب بشكل طبيعي مو مبالغ فيه
+شخصيتك — اقرأ هاد كويس:
+- أنت زي شخص شغال بكاشير مطعم عادي — مش موظف فندق فاخر
+- حكيك قصير جداً وطبيعي — جملة أو جملتين بالكتير
+- ممنوع منعاً باتاً: "كيف يمكنني مساعدتك"، "يسعدني"، "وعليكم السلام ورحمة الله وبركاته"، "بكل سرور"، "تفضل سيدي"، "حضرتك"
+- لما حدا يقول "مرحبا" قول "هلا!" أو "أهلين!" — مش خطبة
+- لما حدا يقول "يعطيك العافية" قول "الله يعافيك" أو "تسلم" — مش أكثر
+- لما حدا يقول "السلام عليكم" قول "وعليكم السلام" — بس هيك، مش "ورحمة الله وبركاته"
+- بتخلط عربي وإنجليزي طبيعي: "شو بدك تـ order؟"، "الـ delivery رح يوصلك"، "الـ total كم"
+- بتفهم كل اللهجات — خليجي، شامي، مصري — وبترد بنفس نكهة الشخص
+- لو الزبون حكى بشكل كاجوال، ارد كاجوال
+- لو قالك "هلا والله" قول "هلا فيك!" — مش خطبة ترحيب
+- ردودك قصيرة جداً — الزبون على التلفون مش عنده وقت يسمع كلام زيادة
 
 أوقات العمل:
 ${formatOpeningHours(agent.openingHours)}
@@ -280,14 +284,13 @@ ${formatOpeningHours(agent.openingHours)}
 ${hasOrders && agent.menu?.length > 0 ? `المنيو:\n${formatMenu(agent.menu)}` : ""}
 
 القواعد:
-- سؤال واحد بس بكل رد
-- لا تطلب رقم التلفون
+- سؤال واحد بس بكل رد — مش سؤالين بنفس الرد
+- لا تطلب رقم التلفون أبداً
 - الحجوزات بالوقت بس، مو التاريخ
-- إذا ما في الصنف بالمنيو، اعتذر بشكل طبيعي وقول ما عنا هيك
+- إذا ما في الصنف بالمنيو، قول "ما عنا هيك" ببساطة
 - لا تقترح طلب أكل بعد ما تأكد الحجز
-- لا تقرأ المنيو كله أبداً — إذا قال الزبون "بدي أطلب" قول "شو بدك تطلب؟" بس
-- إذا سألك عن صنف معين، أخبره بالسعر فقط
-- إذا سألك "شو عندكم؟"، قول مثلاً: "عندنا شاورما، برجر، زنجر وأكثر — شو بيشتهيك؟"`;
+- لا تقرأ المنيو كله — إذا قال "بدي أطلب" قول "شو بدك؟" بس
+- إذا سألك "شو عندكم؟" قول مثلاً "شاورما، زنجر، عصير وأكثر — شو بيشتهيك؟"`;
   }
 
   return `${basePrompt}
@@ -350,8 +353,12 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
 - A name is a proper noun: محمود، سارة، أحمد، خالد، فاطمة
 - Understand Arabic addresses and locations
 - Understand corrections: "لا قصدي"، "مو كذا"، "غلط" = correction — "إلغي"، "ألغي" = cancel — "غيّر"، "بدّل" = modify
-- Your response MUST be in casual Levantine street Arabic mixed naturally with English words where it fits — sound like a real person not a robot
-- Example responses: "شو بدك تـ order؟"، "الـ delivery رح يوصلك خلال شوي"، "باسم مين الـ booking؟"، "تمام، الـ total كم"
+- ردودك MUST تكون قصيرة جداً — جملة واحدة فقط
+- اسلوبك: شخص شغال بكاشير مطعم عادي، مش موظف فندق
+- ممنوع: "كيف يمكنني"، "يسعدني"، "بكل سرور"، "تفضل سيدي"، أي شي رسمي
+- أمثلة صح: "شو بدك؟"، "توصيل ولا استلام؟"، "باسم مين؟"، "أي ساعة؟"، "وين؟"، "تمام!"
+- أمثلة غلط: "بكل سرور سأساعدك"، "كيف يمكنني مساعدتك اليوم"، "شكراً لتواصلك معنا"
+- لما الزبون يحكي بشكل كاجوال، ارد بشكل أكثر كاجوال منه
 - JSON keys stay in English always`
     : `The customer is speaking English. Respond in English, casual and friendly.`;
 
@@ -417,6 +424,9 @@ STRICT RULES:
 - CRITICAL: NEVER return a confirmation message in your response. The system handles confirmations.
 - Required for booking: partySize + time + name. If ANY missing, ask for it.
 - Required for delivery: items + COMPLETE address (area + building + unit) + name. Ask for each missing piece.
+- CRITICAL: If orderType is already set in the current state, NEVER ask about it again. Go straight to the next missing piece.
+- CRITICAL: For delivery orders with no time specified, assume the customer wants it NOW — do not ask for time.
+- CRITICAL: If customer said "I want 1 shawarma for delivery" in ONE sentence, you already have items + orderType. Just ask for address next.
 - Required for pickup: items + time + name. Ask for each missing piece.
 - If all required info collected, return null for response.
 - intent: "cancel" if customer wants to cancel, "modify" if wants to change, "new" otherwise
@@ -442,7 +452,7 @@ Respond ONLY with valid JSON (no markdown):
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: "gpt-4o-mini",
         max_tokens: 500,
         temperature: 0.2,
         messages: [{ role: "user", content: prompt }],
@@ -1158,6 +1168,16 @@ async function _processMessage(body, req, callId) {
       orderDraft.orderType === "pickup" &&
       orderDraft.items?.length > 0 && draft.requestedStart && draft.customerName;
 
+    // For delivery: if no time specified, default to "now" (immediate)
+    if (orderDraft.orderType === "delivery" && !draft.requestedStart) {
+      const dubaiNow = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Dubai" }));
+      const dubaiOffset = 4 * 60;
+      const utcNow = new Date();
+      const utcMs = utcNow.getTime() + (utcNow.getTimezoneOffset() * 60000);
+      draft.requestedStart = new Date(utcMs + (dubaiOffset * 60000));
+      // Don't save to DB yet — will be saved at order creation
+    }
+
     const deliveryComplete =
       orderDraft.orderType === "delivery" &&
       orderDraft.items?.length > 0 && orderDraft.deliveryAddress && draft.customerName;
@@ -1384,12 +1404,26 @@ async function _processMessage(body, req, callId) {
     if (bookingFlowActive && draft.partySize && draft.requestedStart && !draft.customerName && orderDraft.items?.length === 0)
       return { response: t("askName", lang) };
 
+    // If GPT asks about order type but it's already set — override with next question
+    let finalResponse = aiResponse;
+    if (finalResponse && orderDraft.orderType) {
+      const asksOrderType = /توصيل ولا استلام|delivery or pickup|pickup or delivery|كيف بدك.*order|how.*order|دايني ولا|dine.?in or/i.test(finalResponse);
+      if (asksOrderType) {
+        // Override — go straight to next missing field
+        if (orderDraft.orderType === "delivery" && !orderDraft.deliveryAddress)
+          finalResponse = t("askDeliveryAddress", lang);
+        else if (orderDraft.orderType === "pickup" && !draft.requestedStart)
+          finalResponse = t("askPickupTime", lang);
+        else if (!draft.customerName)
+          finalResponse = t("askOrderName", lang);
+      }
+    }
+
     return {
-      response: aiResponse || t("howCanIHelp", lang),
-      // If the AI itself responded with a goodbye, end the call
-      ...(aiResponse && (
-        /goodbye|have a (wonderful|great|good) day/i.test(aiResponse) ||
-        /مع السلامة|وداعاً|يوماً رائعاً/.test(aiResponse)
+      response: finalResponse || t("howCanIHelp", lang),
+      ...(finalResponse && (
+        /goodbye|have a (wonderful|great|good) day/i.test(finalResponse) ||
+        /مع السلامة|وداعاً|يوماً رائعاً/.test(finalResponse)
       ) ? { end_call: true } : {}),
     };
   }
