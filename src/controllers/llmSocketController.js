@@ -395,6 +395,8 @@ STRICT RULES:
   * "لسه" / "بس" / "آه" / "حاكيلك" — filler words, NOT names
   * Any phrase longer than 3 words is almost certainly NOT a name
   * Sentences starting with "أنا" (I) are NEVER names
+  * Words related to addresses are NEVER names: برج، بناية، شقة، طابق، السكني، الميدان، المدينة، الخان
+  * If the "name" contains any building/address words → it is NOT a name, return null
   * If you're unsure, return null for name
 - CRITICAL: Words like أشخاص، شخص، ناس are party size words NOT names. Numbers like أربعة، ثلاثة are NOT names.
 - For Arabic numbers in party size: convert to integer (ثلاثة = 3, أربعة = 4, etc.)
@@ -430,6 +432,7 @@ STRICT RULES:
 - Never ask for phone number
 - Never mention dates, only times
 - CRITICAL: NEVER return a confirmation message in your response. The system handles confirmations.
+- CRITICAL: ONLY extract items that are in the menu list above. If the customer says something that sounds like a menu item but is NOT in the menu, do NOT add it. The transcriber sometimes mishears — "شاورما" might get transcribed as "شوربة" — only add items with names that EXACTLY match the menu.
 - Required for booking: partySize + time + name. If ANY missing, ask for it.
 - Required for delivery: items + COMPLETE address (area + building + unit) + name. Ask for each missing piece.
 - CRITICAL: If orderType is already set in the current state, NEVER ask about it again. Go straight to the next missing piece.
@@ -497,12 +500,12 @@ function looksLikeOrderIntent(text) {
 function looksLikeCancelIntent(text) {
   if (!text) return false;
   return /\b(cancel|cancellation|delete|remove|forget|drop|never mind|nevermind)\b/i.test(text) ||
-    /إلغ|ألغي|امسح|لا أريد|ما أبي|بطّل/.test(text);
+    /إلغ|ألغي|امسح|لا أريد|ما أبي|بطّل|ما طلبت|مو طلبت|شيل/.test(text);
 }
 function looksLikeModifyIntent(text) {
   if (!text) return false;
-  return /\b(change|modify|update|edit|make it|instead|switch|different|wrong|correct|fix|actually)\b/i.test(text) ||
-    /غيّر|بدّل|عدّل|مو كذا|قصدي|لا لا|أقصد|اصلاً/.test(text);
+  return /\b(change|modify|update|edit|make it|instead|switch|different|wrong|correct|fix|actually|remove|delete|take off|without)\b/i.test(text) ||
+    /غيّر|بدّل|عدّل|مو كذا|قصدي|لا لا|أقصد|اصلاً|شيل|احذف|ما طلبت|مو طلبت|بدون/.test(text);
 }
 function looksLikeGoodbye(text, transcript, orderConfirmed, bookingConfirmed) {
   if (!text) return false;
@@ -724,7 +727,9 @@ async function _processMessage(body, req, callId) {
   const justConfirmedBooking = await Booking.findOne({ callId, status: { $in: ["confirmed","seated"] } }).lean();
   const hasActiveDraftOrConfirmed = hasActiveDraft || !!justConfirmedBooking;
 
-  if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed && !hasActiveDraftOrConfirmed) {
+  // Check if there's already a confirmed order in THIS call — never trigger returning caller then
+  const thisCallConfirmedOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing","ready"] } }).lean();
+  if (callerPhone && mentionsChange && !awaitingReturnConfirmation && !returnConfirmed && !hasActiveDraftOrConfirmed && !thisCallConfirmedOrder) {
     const previousCall = await Call.findOne({
       _id: { $ne: freshCall._id },
       $or: [{ callerNumber: callerPhone }, { "bookingDraft.customerPhone": callerPhone }],
@@ -1040,6 +1045,27 @@ async function _processMessage(body, req, callId) {
             }
           });
           return { response: lang === "ar" ? "آسف على ذلك! شو العنوان الصحيح؟ رقم الشقة، اسم البرج، المنطقة والمدينة." : "Sorry about that! What's the correct address? Apartment number, building name, area and city." };
+        }
+      }
+
+      // Check if customer wants to remove an item from confirmed order
+      const mentionsRemoveItem = /شيل|احذف|ما طلبت|مو طلبت|remove|didn't order|never ordered/i.test(latestUserText);
+      if (mentionsRemoveItem && existingOrder) {
+        const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
+        if (mins <= 5) {
+          // Find which item to remove based on what the customer said
+          const updatedItems = existingOrder.items.filter(item => {
+            const itemNameLower = item.name.toLowerCase();
+            return !latestUserText.toLowerCase().includes(itemNameLower.split(' ')[0].toLowerCase());
+          });
+          if (updatedItems.length < existingOrder.items.length) {
+            const newTotal = updatedItems.reduce((sum, item) => sum + (item.price || 0) * (item.quantity || 1), 0);
+            await Order.updateOne({ _id: existingOrder._id }, { $set: { items: updatedItems, total: newTotal } });
+            const itemsSummary = updatedItems.map(i => `${i.name} x${i.quantity}`).join(", ");
+            return { response: lang === "ar"
+              ? `تمام، شلنا الصنف. الطلب هلق: ${itemsSummary || "فاضي"}. في شي ثاني؟`
+              : `Done! Updated order: ${itemsSummary || "empty"}. Anything else?` };
+          }
         }
       }
 
