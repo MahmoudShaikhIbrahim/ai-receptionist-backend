@@ -408,6 +408,10 @@ STRICT RULES:
     - مية=100, ميه=100, مئة=100, مئتين=200, متين=200, ثلاثمية=300, أربعمية=400, خمسمية=500
     - "متين وستة" = 206, "مية وعشرين" = 120, "ثلاثمية وخمسة" = 305
   * Building names: "الميدان السكني"="Al Maidan Al Sakani", "الميدان ثاني"="Al Maidan 2", "برج X"="Tower X"
+  * CRITICAL: "اسم البناية" / "اسم البناي" / "اسم البرج" are LABEL WORDS meaning "building name is..." — they are NOT the actual building name
+  * When customer says "اسم البناية الميدان السكني" → building name is "Al Maidan Al Sakani", NOT "اسم البناية"
+  * When customer says "رقم الشقة 206" → unit is 206, NOT "رقم الشقة 206"
+  * Strip label words and extract only the actual value after them
   * UAE AREA → CITY (MEMORIZE — never assume Dubai by default):
     - الخان / Al Khan / خان → SHARJAH (NOT Dubai)
     - بحيرة الخالد / Khalid Lake → SHARJAH
@@ -1087,10 +1091,49 @@ async function _processMessage(body, req, callId) {
       if (mentionsNotes && existingOrder) {
         const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
         if (mins <= 5) {
-          const currentNotes = existingOrder.notes ? existingOrder.notes + ". " + latestUserText : latestUserText;
-          await Order.updateOne({ _id: existingOrder._id }, { $set: { notes: currentNotes } });
-          return { response: lang === "ar" ? "تمام، أضفنا ملاحظتك. في شي ثاني؟" : "Got it! Added your notes. Anything else?" };
+          // Use GPT to extract a SHORT keyword, not the full sentence
+          const { orderExtracted: noteEx } = await extractAndRespond(latestUserText, draft, orderDraft, transcript, agent, null, lang);
+          // Try item-level note first
+          const itemWithNote = noteEx?.items?.find(i => i.notes);
+          let noteKeyword = itemWithNote?.notes || noteEx?.notes || null;
+          // Fallback: strip filler words manually
+          if (!noteKeyword) {
+            noteKeyword = latestUserText
+              .replace(/آه|اه|أه|لو سمحت|من فضلك|بعد إذنك|ممكن|بقدر|أبي|أريد|بدي|تمام|أكيد/gi, '')
+              .replace(/الشاورما|الزنجر|البرجر|الدجاج|العصير|المندي|الكبسة/gi, '')
+              .trim();
+          }
+          if (!noteKeyword || noteKeyword.length < 2) noteKeyword = latestUserText.trim();
+
+          // Apply to matching item or as order note
+          const updatedItems = existingOrder.items.map(item => {
+            const firstName = item.name.toLowerCase().split(' ')[0];
+            if (latestUserText.toLowerCase().includes(firstName)) {
+              return { ...item.toObject ? item.toObject() : item, notes: noteKeyword };
+            }
+            return item.toObject ? item.toObject() : item;
+          });
+          const changed = JSON.stringify(updatedItems.map(i=>i.notes)) !== JSON.stringify(existingOrder.items.map(i=>i.notes));
+          if (changed) {
+            await Order.updateOne({ _id: existingOrder._id }, { $set: { items: updatedItems } });
+          } else {
+            await Order.updateOne({ _id: existingOrder._id }, { $set: { notes: noteKeyword } });
+          }
+          return { response: lang === "ar" ? "تمام، أضفنا ملاحظتك. في شي ثاني؟" : "Got it! Added your note. Anything else?" };
         }
+      }
+
+      // Customer wants to add more to their order
+      const wantsToAdd = /بقدر أضيف|ممكن أضيف|أبي أضيف|بدي أضيف|can i add|i want to add|add another|أضيف كمان|بدي كمان|بدي أطلب كمان/i.test(latestUserText);
+      if (wantsToAdd) {
+        // Re-open order flow keeping address and order type
+        await Call.updateOne({ _id: freshCall._id }, {
+          $set: {
+            "orderDraft.items": [],
+            "orderDraft.status": null,
+          }
+        });
+        return { response: lang === "ar" ? "أكيد! شو بدك تضيف؟" : "Sure! What would you like to add?" };
       }
 
       return { response: t("anythingElse", lang) };
