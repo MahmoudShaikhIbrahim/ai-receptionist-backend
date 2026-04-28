@@ -368,7 +368,7 @@ ${langNote}
 
 Current state:
 - Booking: people=${currentDraft.partySize ?? "not collected"}, time=${currentDraft.requestedStart ? new Date(currentDraft.requestedStart).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true,timeZone:"Asia/Dubai"}) : "not collected"}, name=${currentDraft.customerName ?? "not collected"}
-- Order: items=${orderDraft.items?.length > 0 ? orderDraft.items.map(i=>`${i.name}x${i.quantity}${i.notes ? "("+i.notes+")" : ""}`).join(",") : "none"}, type=${orderDraft.orderType ?? "not set"}, address=${orderDraft.deliveryAddress ?? "not collected"}, notes=${orderDraft.notes ?? "none"}
+- Order: items=${orderDraft.items?.length > 0 ? orderDraft.items.map(i=>`${i.name}x${i.quantity}${i.notes ? "("+i.notes+")" : ""}`).join(",") : "none"}, type=${orderDraft.orderType ?? "not set"}, address=${(orderDraft.deliveryAddress && orderDraft.deliveryAddress !== "null") ? orderDraft.deliveryAddress : "not collected"}, notes=${orderDraft.notes ?? "none"}
 ${returningInfo}
 
 ${menuText}
@@ -448,7 +448,7 @@ Respond ONLY with valid JSON (no markdown):
   "orderExtracted": {
     "items": [{"name": "<EXACT menu name>", "quantity": <number>, "extras": [], "notes": "<item customization or null>"}],
     "orderType": "<dineIn|pickup|delivery|null>",
-    "deliveryAddress": "<unit, building, area, city — or null if incomplete>",
+    "deliveryAddress": "<unit, building, area, city — or null (JSON null, NOT the string 'null') if incomplete>",
     "notes": "<order-level notes or null>"
   },
   "intent": "<cancel|modify|new|null>",
@@ -690,7 +690,7 @@ async function _processMessage(body, req, callId) {
     items:           freshCall.orderDraft?.items           ?? [],
     orderType:       freshCall.orderDraft?.orderType       ?? null,
     status:          freshCall.orderDraft?.status          ?? null,
-    deliveryAddress: freshCall.orderDraft?.deliveryAddress ?? null,
+    deliveryAddress: (freshCall.orderDraft?.deliveryAddress && freshCall.orderDraft.deliveryAddress !== "null") ? freshCall.orderDraft.deliveryAddress : null,
     notes:           freshCall.orderDraft?.notes           ?? null,
   };
 
@@ -1183,7 +1183,11 @@ async function _processMessage(body, req, callId) {
         orderDraft.orderType = newType;
       }
     }
-    if (orderExtracted.deliveryAddress) orderDraft.deliveryAddress = orderExtracted.deliveryAddress;
+    // GPT sometimes returns the string "null" instead of JSON null — treat both as null
+    const rawAddr = orderExtracted.deliveryAddress;
+    if (rawAddr && rawAddr !== "null" && rawAddr !== "undefined" && rawAddr.trim().length > 3) {
+      orderDraft.deliveryAddress = rawAddr;
+    }
     if (orderExtracted.notes) orderDraft.notes = orderExtracted.notes;
 
     // Save drafts
