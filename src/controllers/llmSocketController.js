@@ -160,6 +160,43 @@ function translateOrderType(type, lang) {
   return map[type]?.[lang] || type;
 }
 
+// ─── ARABIC TEXT → ENGLISH FOR STORAGE ──────────────────────────────────────
+// Common Arabic address/area words → English
+const ARABIC_TO_ENGLISH_MAP = {
+  // Areas
+  'الشارقة': 'Sharjah', 'شارقة': 'Sharjah',
+  'دبي': 'Dubai', 'أبوظبي': 'Abu Dhabi', 'ابوظبي': 'Abu Dhabi',
+  'عجمان': 'Ajman', 'الفجيرة': 'Fujairah', 'رأس الخيمة': 'Ras Al Khaimah',
+  'الخان': 'Al Khan', 'خان': 'Al Khan',
+  'الميدان': 'Al Maidan', 'ميدان': 'Al Maidan',
+  'الميدان السكني': 'Al Maidan Al Sakani',
+  'بحيرة الخالد': 'Khalid Lake', 'النهدة': 'Al Nahda',
+  'المجاز': 'Al Mujaz', 'الزاهية': 'Al Zahia',
+  'الكورنيش': 'Corniche', 'المرية': 'Al Marija',
+  // Building prefixes
+  'بناية': 'Building', 'برج': 'Tower', 'فيلا': 'Villa',
+  'شقة': 'Apt', 'طابق': 'Floor',
+  // Notes
+  'بدون خضار': 'no vegetables', 'بدون بصل': 'no onions',
+  'بدون جبن': 'no cheese', 'بدون صوص': 'no sauce',
+  'بدون ثوم': 'no garlic', 'بدون فلفل': 'no pepper',
+  'حار': 'spicy', 'حار جداً': 'extra spicy',
+  'إضافي': 'extra', 'اضافي': 'extra',
+  'مشوي': 'grilled', 'مقلي': 'fried',
+  'بدون': 'no', 'مع': 'with',
+};
+
+function translateToEnglishStorage(text) {
+  if (!text) return text;
+  let result = text;
+  // Sort by length descending so longer phrases match first
+  const entries = Object.entries(ARABIC_TO_ENGLISH_MAP).sort((a,b) => b[0].length - a[0].length);
+  for (const [ar, en] of entries) {
+    result = result.replace(new RegExp(ar, 'g'), en);
+  }
+  return result.trim();
+}
+
 // ─── ARABIC NAME TRANSLITERATION ──────────────────────────────────────────────
 // Converts Arabic name to English equivalent for MongoDB storage
 async function transliterateToEnglish(arabicText) {
@@ -449,6 +486,12 @@ STRICT RULES:
 - Never ask for phone number
 - Never mention dates, only times
 - CRITICAL: NEVER return a confirmation message in your response. The system handles confirmations.
+- CRITICAL: All extracted DATA (names, addresses, notes) must be in ENGLISH in the JSON fields.
+  * Arabic name "محمود" → store as "Mahmoud" in the name field
+  * Arabic area "الشارقة" → store as "Sharjah" in deliveryAddress
+  * Arabic note "بدون خضار" → store as "no vegetables" in notes field
+  * Your "response" field (what the agent says) stays in Arabic if customer speaks Arabic
+  * But all JSON data fields must be in English for the restaurant staff
 - CRITICAL: ONLY extract items that are in the menu list above. If the customer says something that sounds like a menu item but is NOT in the menu, do NOT add it. The transcriber sometimes mishears — "شاورما" might get transcribed as "شوربة" — only add items with names that EXACTLY match the menu.
 - Required for booking: partySize + time + name. If ANY missing, ask for it.
 - Required for delivery: items + COMPLETE address (area + building + unit) + name. Ask for each missing piece.
@@ -1126,11 +1169,20 @@ async function _processMessage(body, req, callId) {
       // Customer wants to add more to their order
       const wantsToAdd = /بقدر أضيف|ممكن أضيف|أبي أضيف|بدي أضيف|can i add|i want to add|add another|أضيف كمان|بدي كمان|بدي أطلب كمان/i.test(latestUserText);
       if (wantsToAdd) {
-        // Re-open order flow keeping address and order type
+        // Re-open order flow preserving ALL context — type, address, name, notes
+        // Only reset items and status so customer can add new items
+        orderDraft.items  = [];
+        orderDraft.status = null;
+        // Keep: orderType, deliveryAddress, notes
+        // Keep: draft.customerName
         await Call.updateOne({ _id: freshCall._id }, {
           $set: {
-            "orderDraft.items": [],
+            "orderDraft.items":  [],
             "orderDraft.status": null,
+            // Explicitly preserve these so they survive the round-trip
+            "orderDraft.orderType":        orderDraft.orderType,
+            "orderDraft.deliveryAddress":  orderDraft.deliveryAddress,
+            "bookingDraft.customerName":   draft.customerName,
           }
         });
         return { response: lang === "ar" ? "أكيد! شو بدك تضيف؟" : "Sure! What would you like to add?" };
@@ -1201,7 +1253,7 @@ async function _processMessage(body, req, callId) {
       const normalizedItems = orderExtracted.items.map(item =>
         typeof item === "string"
           ? { name: item, quantity: 1, extras: [], notes: null }
-          : { name: item.name || item.item, quantity: item.quantity || 1, extras: item.extras || [], notes: item.notes || null }
+          : { name: item.name || item.item, quantity: item.quantity || 1, extras: item.extras || [], notes: item.notes ? translateToEnglishStorage(item.notes) : null }
       );
       const validItems = normalizedItems.filter(item =>
         item?.name && !!findMenuItem(agent.menu?.filter(m => m.available), item.name)
@@ -1242,11 +1294,12 @@ async function _processMessage(body, req, callId) {
     // GPT sometimes returns the string "null" instead of JSON null — treat both as null
     const rawAddr = orderExtracted.deliveryAddress;
     if (rawAddr && rawAddr !== "null" && rawAddr !== "undefined" && rawAddr.trim().length > 3) {
-      orderDraft.deliveryAddress = rawAddr;
+      // Translate Arabic address words to English for storage
+      orderDraft.deliveryAddress = translateToEnglishStorage(rawAddr);
     }
     // If address was saved but has no unit number, keep it but flag as incomplete
     // The fallback hint will ask for unit number
-    if (orderExtracted.notes) orderDraft.notes = orderExtracted.notes;
+    if (orderExtracted.notes) orderDraft.notes = translateToEnglishStorage(orderExtracted.notes);
 
     // Save drafts
     await Call.updateOne({ _id: freshCall._id }, {
