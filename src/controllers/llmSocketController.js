@@ -324,7 +324,7 @@ ${hasOrders && agent.menu?.length > 0 ? `المنيو:\n${formatMenu(agent.menu)
 - سؤال واحد بس بكل رد — مش سؤالين بنفس الرد
 - لا تطلب رقم التلفون أبداً
 - الحجوزات بالوقت بس، مو التاريخ
-- إذا ما في الصنف بالمنيو، قول "ما عنا هيك" ببساطة
+- إذا ما في الصنف بالمنيو، قول "ما عنا هيك" ببساطة — لكن انتبه: "سبايسي"، "حار"، "بدون خضار"، "عادي" هي ملاحظات وليست أصناف، لا تقول "ما عنا" عليها أبداً
 - لا تقترح طلب أكل بعد ما تأكد الحجز
 - لا تقرأ المنيو كله — إذا قال "بدي أطلب" قول "شو بدك؟" بس
 - إذا سألك "شو عندكم؟" قول مثلاً "شاورما، زنجر، عصير وأكثر — شو بيشتهيك؟"`;
@@ -493,6 +493,8 @@ STRICT RULES:
   * Your "response" field (what the agent says) stays in Arabic if customer speaks Arabic
   * But all JSON data fields must be in English for the restaurant staff
 - CRITICAL: ONLY extract items that are in the menu list above. If the customer says something that sounds like a menu item but is NOT in the menu, do NOT add it. The transcriber sometimes mishears — "شاورما" might get transcribed as "شوربة" — only add items with names that EXACTLY match the menu.
+- CRITICAL: Words like "spicy", "سبايسي", "حار", "extra", "بدون", "plain", "normal", "عادي" are CUSTOMIZATIONS/NOTES, NOT menu items. Never tell the customer "we don't have spicy" — spicy is always a note on any item.
+- If customer says "واحد سبايسي وواحد عادي" for an item → extract 2 of that item with notes "spicy" and "regular" respectively. Never reject this as unavailable.
 - Required for booking: partySize + time + name. If ANY missing, ask for it.
 - Required for delivery: items + COMPLETE address (area + building + unit) + name. Ask for each missing piece.
 - CRITICAL: If orderType is already set in the current state, NEVER ask about it again. Go straight to the next missing piece.
@@ -1274,23 +1276,30 @@ async function _processMessage(body, req, callId) {
     if (orderExtracted.orderType) {
       const newType  = orderExtracted.orderType;
       const prevType = orderDraft.orderType;
-      if (newType !== prevType) {
-        orderDraft.orderType       = newType;
-        orderDraft.deliveryAddress = null;
-        draft.partySize            = null;
-        draft.requestedStart       = null;
-        await Call.updateOne({ _id: freshCall._id }, {
-          $set: {
-            "orderDraft.orderType":        newType,
-            "orderDraft.deliveryAddress":  null,
-            "bookingDraft.partySize":      null,
-            "bookingDraft.requestedStart": null,
-          }
-        });
+      if (newType !== prevType && prevType) {
+        // Only switch if explicitly different AND no items yet (not mid-order)
+        // Don't switch orderType mid-order just because GPT extracted a different one
+        if (orderDraft.items?.length === 0) {
+          orderDraft.orderType       = newType;
+          orderDraft.deliveryAddress = null;
+          draft.partySize            = null;
+          draft.requestedStart       = null;
+          await Call.updateOne({ _id: freshCall._id }, {
+            $set: {
+              "orderDraft.orderType":        newType,
+              "orderDraft.deliveryAddress":  null,
+              "bookingDraft.partySize":      null,
+              "bookingDraft.requestedStart": null,
+            }
+          });
+        }
+        // If we already have items, keep the existing orderType
       } else {
         orderDraft.orderType = newType;
       }
     }
+    // CRITICAL: if orderDraft already has an orderType from DB, never lose it
+    // GPT returning orderType:null doesn't mean we should clear it
     // GPT sometimes returns the string "null" instead of JSON null — treat both as null
     const rawAddr = orderExtracted.deliveryAddress;
     if (rawAddr && rawAddr !== "null" && rawAddr !== "undefined" && rawAddr.trim().length > 3) {
@@ -1497,7 +1506,11 @@ async function _processMessage(body, req, callId) {
 
     // ── PICKUP / DELIVERY ──────────────────────────────────
     if (pickupComplete || deliveryComplete) {
-      const existingOrder = confirmedOrderId ? await Order.findById(confirmedOrderId) : null;
+      // Check for existing order in THIS call first (for add-to-order flow)
+      // then fall back to returning caller's order
+      const existingOrder =
+        await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 }) ||
+        (confirmedOrderId ? await Order.findById(confirmedOrderId) : null);
       const total = orderDraft.items.reduce((sum, item) => {
         const mi = findMenuItem(agent.menu, item.name);
         return sum + (mi?.price || 0) * (item.quantity || 1);
@@ -1508,15 +1521,37 @@ async function _processMessage(body, req, callId) {
       });
 
       if (existingOrder) {
+        // Merge new items with existing items instead of replacing
+        const existingItemsMap = {};
+        for (const item of existingOrder.items) {
+          const key = item.name + (item.notes || '');
+          existingItemsMap[key] = item.toObject ? item.toObject() : { ...item };
+        }
+        for (const item of orderItems) {
+          const key = item.name + (item.notes || '');
+          if (existingItemsMap[key]) {
+            existingItemsMap[key].quantity += item.quantity;
+          } else {
+            existingItemsMap[key] = item;
+          }
+        }
+        const mergedItems = Object.values(existingItemsMap);
+        const mergedTotal = mergedItems.reduce((sum, item) => {
+          const mi = findMenuItem(agent.menu, item.name);
+          return sum + (mi?.price || 0) * (item.quantity || 1);
+        }, 0);
         await Order.updateOne({ _id: existingOrder._id }, {
           $set: {
-            items: orderItems,
+            items: mergedItems,
             deliveryAddress: orderDraft.deliveryAddress || existingOrder.deliveryAddress,
             orderType: orderDraft.orderType,
             customerName: draft.customerName,
-            total, status: "confirmed",
+            total: mergedTotal, status: "confirmed",
+            notes: orderDraft.notes || existingOrder.notes || null,
           }
         });
+        // Update total for confirmation message
+        Object.assign(orderDraft, { items: mergedItems });
       } else {
         const raceCheck = await Order.findOne({
           callId, orderType: orderDraft.orderType, status: "confirmed",
@@ -1591,15 +1626,19 @@ async function _processMessage(body, req, callId) {
     // If GPT asks about order type but it's already set — override with next question
     let finalResponse = aiResponse;
     if (finalResponse && orderDraft.orderType) {
-      const asksOrderType = /توصيل ولا استلام|delivery or pickup|pickup or delivery|كيف بدك.*order|how.*order|دايني ولا|dine.?in or/i.test(finalResponse);
+      const asksOrderType = /توصيل ولا استلام|delivery or pickup|pickup or delivery|كيف بدك.*order|how.*order|دايني ولا|dine.?in or|شو بدك.*توصيل|توصيل.*استلام/i.test(finalResponse);
       if (asksOrderType) {
         // Override — go straight to next missing field
         if (orderDraft.orderType === "delivery" && !orderDraft.deliveryAddress)
           finalResponse = t("askDeliveryAddress", lang);
+        else if (orderDraft.orderType === "delivery" && orderDraft.deliveryAddress && !draft.customerName)
+          finalResponse = t("askOrderName", lang);
         else if (orderDraft.orderType === "pickup" && !draft.requestedStart)
           finalResponse = t("askPickupTime", lang);
         else if (!draft.customerName)
           finalResponse = t("askOrderName", lang);
+        else
+          finalResponse = lang === "ar" ? "في شي ثاني؟" : "Anything else?";
       }
     }
 
