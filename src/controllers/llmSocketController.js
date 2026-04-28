@@ -701,7 +701,11 @@ async function _processMessage(body, req, callId) {
   const hasArabicChars = /[\u0600-\u06FF]/.test(latestUserText);
 
   // Short English fillers that may appear during an Arabic conversation
-  const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh)[\s\.\!\?]*$/i.test(latestUserText.trim());
+  // English fillers that should NOT cause language flip during Arabic conversation
+  // Includes number words spoken in English (e.g. "two zero six" for apartment number)
+  const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh)[\s\.\!\?]*$/i.test(latestUserText.trim()) ||
+    /^[\d\s]+(zero|one|two|three|four|five|six|seven|eight|nine|hundred|thousand)?[\s\d]*$/i.test(latestUserText.trim()) ||
+    /^(zero|one|two|three|four|five|six|seven|eight|nine|hundred|thousand)[\s\d]*(zero|one|two|three|four|five|six|seven|eight|nine|hundred|thousand)?[\s\d]*$/i.test(latestUserText.trim());
 
   if (hasArabicChars) {
     lang = "ar";
@@ -1171,20 +1175,26 @@ async function _processMessage(body, req, callId) {
       // Customer wants to add more to their order
       const wantsToAdd = /بقدر أضيف|ممكن أضيف|أبي أضيف|بدي أضيف|can i add|i want to add|add another|أضيف كمان|بدي كمان|بدي أطلب كمان/i.test(latestUserText);
       if (wantsToAdd) {
-        // Re-open order flow preserving ALL context — type, address, name, notes
-        // Only reset items and status so customer can add new items
-        orderDraft.items  = [];
-        orderDraft.status = null;
-        // Keep: orderType, deliveryAddress, notes
-        // Keep: draft.customerName
+        // Load the existing confirmed order to get its type and address
+        const confirmedOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 }).lean();
+        const preservedType    = confirmedOrder?.orderType    || orderDraft.orderType;
+        const preservedAddress = confirmedOrder?.deliveryAddress || orderDraft.deliveryAddress;
+        const preservedName    = confirmedOrder?.customerName  || draft.customerName;
+
+        // Reset only items and status — preserve everything else from confirmed order
+        orderDraft.items           = [];
+        orderDraft.status          = null;
+        orderDraft.orderType       = preservedType;
+        orderDraft.deliveryAddress = preservedAddress;
+        draft.customerName         = preservedName;
+
         await Call.updateOne({ _id: freshCall._id }, {
           $set: {
-            "orderDraft.items":  [],
-            "orderDraft.status": null,
-            // Explicitly preserve these so they survive the round-trip
-            "orderDraft.orderType":        orderDraft.orderType,
-            "orderDraft.deliveryAddress":  orderDraft.deliveryAddress,
-            "bookingDraft.customerName":   draft.customerName,
+            "orderDraft.items":            [],
+            "orderDraft.status":           null,
+            "orderDraft.orderType":        preservedType,
+            "orderDraft.deliveryAddress":  preservedAddress,
+            "bookingDraft.customerName":   preservedName,
           }
         });
         return { response: lang === "ar" ? "أكيد! شو بدك تضيف؟" : "Sure! What would you like to add?" };
