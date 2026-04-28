@@ -94,7 +94,7 @@ const R = {
   askPartySize:       { en: "How many people will be joining?",          ar: "كم نفر؟" },
   askTime:            { en: "What time works for you?",                  ar: "أي ساعة؟" },
   askName:            { en: "What name should I put the booking under?", ar: "باسم مين؟" },
-  askOrderName:       { en: "What name should I put the order under?",   ar: "باسم مين الـ order؟" },
+  askOrderName:       { en: "What name for the order?",   ar: "باسم مين نحط الـ order؟" },
 
   // Questions — Order
   askDeliveryAddress: { en: "What's the delivery address?",              ar: "وين بدنا نوصل؟" },
@@ -356,8 +356,9 @@ async function extractAndRespond(text, currentDraft, orderDraft, transcript, age
 - ردودك MUST تكون قصيرة جداً — جملة واحدة فقط
 - اسلوبك: شخص شغال بكاشير مطعم عادي، مش موظف فندق
 - ممنوع: "كيف يمكنني"، "يسعدني"، "بكل سرور"، "تفضل سيدي"، أي شي رسمي
-- أمثلة صح: "شو بدك؟"، "توصيل ولا استلام؟"، "باسم مين؟"، "أي ساعة؟"، "وين؟"، "تمام!"
-- أمثلة غلط: "بكل سرور سأساعدك"، "كيف يمكنني مساعدتك اليوم"، "شكراً لتواصلك معنا"
+- أمثلة صح: "شو بدك؟"، "توصيل ولا استلام؟"، "باسم مين؟"، "أي ساعة؟"، "وين؟"، "تمام!"، "رقم الشقة؟"
+- أمثلة غلط: "بكل سرور سأساعدك"، "كيف يمكنني مساعدتك اليوم"، "شكراً لتواصلك معنا"، "وين اسمك؟"، "ما اسمك؟"
+- NEVER say "وين اسمك؟" — always say "باسم مين؟" when asking for name
 - لما الزبون يحكي بشكل كاجوال، ارد بشكل أكثر كاجوال منه
 - JSON keys stay in English always`
     : `The customer is speaking English. Respond in English, casual and friendly.`;
@@ -401,18 +402,30 @@ STRICT RULES:
 - CRITICAL: Words like أشخاص، شخص، ناس are party size words NOT names. Numbers like أربعة، ثلاثة are NOT names.
 - For Arabic numbers in party size: convert to integer (ثلاثة = 3, أربعة = 4, etc.)
 - For addresses (CRITICAL):
-  * Be LENIENT — save whatever the customer gives. Do NOT keep asking for info already provided.
-  * Format: "unit, building, area, city" e.g. "206, Al Maidan Al Sakani, Al Khan, Sharjah"
+  * Format: "unit, building, area, city" e.g. "206, Al Maidan 2, Al Khan, Sharjah"
   * ARABIC NUMBER WORDS → must convert to digits in addresses:
     - واحد=1, اثنين=2, ثلاثة=3, عشرة=10, عشرين=20, ثلاثين=30, أربعين=40, خمسين=50
     - مية=100, ميه=100, مئة=100, مئتين=200, متين=200, ثلاثمية=300, أربعمية=400, خمسمية=500
     - "متين وستة" = 206, "مية وعشرين" = 120, "ثلاثمية وخمسة" = 305
-  * Building names: "الميدان السكني"="Al Maidan Al Sakani", "بناية X"="Building X", "برج X"="Tower X"
-  * Common UAE areas: JVC, JBR, Marina, Downtown, Deira, Sharjah, Abu Dhabi, الخان=Al Khan, الميدان=Al Maidan
-  * Only ask for MORE info if customer gave NOTHING at all (just "somewhere in Dubai" with no building)
-  * If customer gave building name + unit number → SAVE IT immediately, even without city
-  * If customer gave area + building → SAVE IT, ask unit number only once
-  * NEVER return null if the customer gave a building name and/or unit number
+  * Building names: "الميدان السكني"="Al Maidan Al Sakani", "الميدان ثاني"="Al Maidan 2", "برج X"="Tower X"
+  * UAE AREA → CITY (MEMORIZE — never assume Dubai by default):
+    - الخان / Al Khan / خان → SHARJAH (NOT Dubai)
+    - بحيرة الخالد / Khalid Lake → SHARJAH
+    - النهدة الشارقة → SHARJAH
+    - المجاز / Mujaz → SHARJAH
+    - الزاهية / Zahia → SHARJAH
+    - JVC, JBR, Marina, Downtown, Deira, Bur Dubai, Jumeirah, مردف → DUBAI
+    - النهدة دبي → DUBAI
+    - عجمان / Ajman → AJMAN
+    - رأس الخيمة / RAK → RAS AL KHAIMAH
+    - العين / Al Ain → ABU DHABI
+  * ALWAYS infer city from area — never default to Dubai if area suggests another city
+  * Missing info rules:
+    - Customer gave ONLY area (no building) → ask "شو اسم البناية؟"
+    - Customer gave area + building (no unit) → SAVE area+building, ask "رقم الشقة أو الوحدة؟"
+    - Customer gave building + unit (no area/city) → SAVE it, infer city if possible
+    - Customer gave all three → SAVE immediately, return as address
+  * NEVER ask again for info the customer already gave
 - For item notes (CRITICAL — accept at ANY point in the conversation):
   * Extract ANY customization the customer mentions for a specific item AT ANY TIME
   * Store notes as SHORT KEYWORDS ONLY — not full sentences. The kitchen needs quick instructions.
@@ -1188,6 +1201,8 @@ async function _processMessage(body, req, callId) {
     if (rawAddr && rawAddr !== "null" && rawAddr !== "undefined" && rawAddr.trim().length > 3) {
       orderDraft.deliveryAddress = rawAddr;
     }
+    // If address was saved but has no unit number, keep it but flag as incomplete
+    // The fallback hint will ask for unit number
     if (orderExtracted.notes) orderDraft.notes = orderExtracted.notes;
 
     // Save drafts
@@ -1455,6 +1470,13 @@ async function _processMessage(body, req, callId) {
     // ── FALLBACK HINTS ────────────────────────────────────
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress)
       return { response: t("askDeliveryAddress", lang) };
+    // If address exists but has no unit number (no digits found), ask for it
+    if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && orderDraft.deliveryAddress) {
+      const hasUnitNumber = /\d+/.test(orderDraft.deliveryAddress);
+      if (!hasUnitNumber) {
+        return { response: lang === "ar" ? "رقم الشقة أو الوحدة؟" : "What's the apartment or unit number?" };
+      }
+    }
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && orderDraft.deliveryAddress && !draft.customerName)
       return { response: t("askOrderName", lang) };
     if (orderDraft.orderType === "pickup" && orderDraft.items?.length > 0 && !draft.requestedStart)
