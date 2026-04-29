@@ -470,14 +470,24 @@ STRICT RULES:
 - For item notes (CRITICAL — accept at ANY point in the conversation):
   * Extract ANY customization the customer mentions for a specific item AT ANY TIME
   * Store notes as SHORT KEYWORDS ONLY — not full sentences. The kitchen needs quick instructions.
-  * Examples of CORRECT notes: "بدون خضار", "no onions", "extra sauce", "حار", "بدون جبن", "well done"
-  * Examples of WRONG notes: "هل يمكن الشاورما بدون خضار؟", "the customer wants no vegetables please", "Can the shawarma be without vegetables?"
-  * If customer says "ممكن الشاورما بدون خضار؟" → notes = "بدون خضار"
-  * If customer says "بدون بصل وبدون خضار" → notes = "بدون بصل، بدون خضار"
-  * If customer says "can you make it spicy" → notes = "spicy"
-  * STRIP all question words, polite phrases, and filler — keep ONLY the instruction itself
-  * These go in the item's "notes" field — update the relevant item even if it was mentioned earlier
-  * NEVER ignore customization requests — they are always important
+  * Notes are ONLY real customizations — things that change how the item is prepared
+  * Examples of CORRECT notes: "no vegetables", "no onions", "extra sauce", "spicy", "no cheese", "well done", "extra spicy"
+  * Examples of WRONG notes — do NOT save these:
+    - "عادي" / "normal" / "regular" / "عادية" = means NO customization, save as null not as a note
+    - Full sentences: "هل يمكن الشاورما بدون خضار؟" → extract just "no vegetables"
+    - Filler words: "please", "لو سمحت", "من فضلك" → strip these completely
+  * ALL notes must be in ENGLISH:
+    - "بدون خضار" → "no vegetables"
+    - "بدون بصل" → "no onions"  
+    - "بدون جبن" → "no cheese"
+    - "حار" / "سبايسي" → "spicy"
+    - "حار جداً" → "extra spicy"
+    - "بدون صوص" → "no sauce"
+    - "مشوي" → "grilled"
+    - "بدون ثوم" → "no garlic"
+  * If customer says "واحد سبايسي وواحد عادي" → first item notes = "spicy", second item notes = null (عادي = no note)
+  * These go in the item's "notes" field — update the relevant item even if mentioned earlier
+  * NEVER ignore real customization requests
 - For address corrections (CRITICAL):
   * If customer says the address is wrong or gives a correction ("لا مو صح"، "غلط"، "actually it's in Sharjah"، "هي في الشارقة"), extract the CORRECTED address
   * Always prefer the most recent address the customer gives
@@ -587,6 +597,7 @@ function looksLikeGoodbye(text, transcript, orderConfirmed, bookingConfirmed) {
     /\b(thank you|thanks|no thank|no thanks)\b/i.test(text) ||
     /^لا[،,]?\s*شكر/i.test(text) ||
     /^لا،?\s*مشكور/i.test(text) ||
+    /^بس\s*شكر/i.test(text) ||
     /يسلموا|يعطيك العافي[ةه]|الله يعافيك|تصبح على خير/.test(text);
 
   // "شكراً" alone — only goodbye if confirmed or very late in conversation
@@ -1042,7 +1053,7 @@ async function _processMessage(body, req, callId) {
       return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }
     // "لا" or "no" alone after confirmed order = goodbye
-    const isSimpleNo = /^(لا|no|nope|لأ)[s.!?،]*$/i.test(latestUserText.trim());
+    const isSimpleNo = /^(لا|no|nope|لأ|بس|bas|that's it|done)[\s\.\!\?،]*$/i.test(latestUserText.trim());
     if (isSimpleNo) {
       return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }
@@ -1136,13 +1147,16 @@ async function _processMessage(body, req, callId) {
       }
 
       // Check if customer is adding notes/customizations
-      const mentionsNotes = /بدون|بدو|without|no |extra|حار|spicy|اضافي|خضار|بصل|جبن|صوص|sauce|cheese|onion|vegg|notes|ملاحظة/i.test(latestUserText);
+      // Check if this is a note — either by keyword OR by GPT already extracting item notes
+      const { orderExtracted: noteCheck } = await extractAndRespond(latestUserText, draft, orderDraft, transcript, agent, null, lang);
+      const gptFoundNotes = noteCheck?.items?.some(i => i.notes) || noteCheck?.notes;
+      const mentionsNotes = gptFoundNotes ||
+        /بدون|بدو|without|no |extra|حار|spicy|سبايسي|اضافي|خضار|بصل|جبن|صوص|sauce|cheese|onion|vegg|notes|ملاحظة|عادي|حكيت|قلت|تكون|يكون/i.test(latestUserText);
       if (mentionsNotes && existingOrder) {
         const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
         if (mins <= 5) {
-          // Use GPT to extract a SHORT keyword, not the full sentence
-          const { orderExtracted: noteEx } = await extractAndRespond(latestUserText, draft, orderDraft, transcript, agent, null, lang);
-          // Try item-level note first
+          // Use already-extracted notes from GPT (noteCheck from above), no extra API call
+          const noteEx = noteCheck;
           const itemWithNote = noteEx?.items?.find(i => i.notes);
           let noteKeyword = itemWithNote?.notes || noteEx?.notes || null;
           // Fallback: strip filler words manually
@@ -1154,21 +1168,45 @@ async function _processMessage(body, req, callId) {
           }
           if (!noteKeyword || noteKeyword.length < 2) noteKeyword = latestUserText.trim();
 
-          // Apply to matching item or as order note
-          const updatedItems = existingOrder.items.map(item => {
-            const firstName = item.name.toLowerCase().split(' ')[0];
-            if (latestUserText.toLowerCase().includes(firstName)) {
-              return { ...item.toObject ? item.toObject() : item, notes: noteKeyword };
+          // Apply ALL extracted item notes
+          let updatedItems = existingOrder.items.map(i => i.toObject ? i.toObject() : { ...i });
+
+          if (noteEx?.items?.length > 0) {
+            // GPT extracted specific item notes — apply each one
+            const meaninglessNotes = /^(عادي|عادية|normal|regular|plain|عادي بس|nothing|لا شي|نفس|same)$/i;
+            for (const extracted of noteEx.items) {
+              if (!extracted.notes) continue;
+              // Skip meaningless "notes" like "عادي" which means no customization
+              if (meaninglessNotes.test(extracted.notes.trim())) continue;
+              // Find matching item in existing order
+              const matchIdx = updatedItems.findIndex(i =>
+                i.name.toLowerCase().includes(extracted.name.toLowerCase().split(' ')[0]) ||
+                extracted.name.toLowerCase().includes(i.name.toLowerCase().split(' ')[0])
+              );
+              if (matchIdx >= 0) {
+                // If same item appears multiple times with different notes, split it
+                const existing = updatedItems[matchIdx];
+                if (existing.quantity > 1 && extracted.quantity < existing.quantity) {
+                  updatedItems[matchIdx] = { ...existing, quantity: existing.quantity - extracted.quantity };
+                  updatedItems.push({ ...existing, quantity: extracted.quantity, notes: extracted.notes });
+                } else {
+                  updatedItems[matchIdx] = { ...existing, notes: extracted.notes };
+                }
+              }
             }
-            return item.toObject ? item.toObject() : item;
-          });
-          const changed = JSON.stringify(updatedItems.map(i=>i.notes)) !== JSON.stringify(existingOrder.items.map(i=>i.notes));
-          if (changed) {
-            await Order.updateOne({ _id: existingOrder._id }, { $set: { items: updatedItems } });
-          } else {
-            await Order.updateOne({ _id: existingOrder._id }, { $set: { notes: noteKeyword } });
+          } else if (noteKeyword) {
+            // Apply to first matching item or as order note
+            const firstName = updatedItems[0]?.name?.toLowerCase().split(' ')[0];
+            if (firstName && latestUserText.toLowerCase().includes(firstName)) {
+              updatedItems[0] = { ...updatedItems[0], notes: noteKeyword };
+            } else {
+              await Order.updateOne({ _id: existingOrder._id }, { $set: { notes: noteKeyword } });
+              return { response: lang === "ar" ? "تمام، أضفنا ملاحظتك. في شي ثاني؟" : "Got it! Added your note. Anything else?" };
+            }
           }
-          return { response: lang === "ar" ? "تمام، أضفنا ملاحظتك. في شي ثاني؟" : "Got it! Added your note. Anything else?" };
+
+          await Order.updateOne({ _id: existingOrder._id }, { $set: { items: updatedItems } });
+          return { response: lang === "ar" ? "تمام، أضفنا ملاحظاتك. في شي ثاني؟" : "Got it! Added your notes. Anything else?" };
         }
       }
 
