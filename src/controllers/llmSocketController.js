@@ -485,7 +485,11 @@ STRICT RULES:
     - "بدون صوص" → "no sauce"
     - "مشوي" → "grilled"
     - "بدون ثوم" → "no garlic"
-  * If customer says "واحد سبايسي وواحد عادي" → first item notes = "spicy", second item notes = null (عادي = no note)
+  * If customer says "واحد سبايسي وواحد عادي" → extract as TWO separate items: first with notes="spicy", second with notes=null
+  * If customer says "واحد سبايسي وواحد بدون خضار" → extract as TWO separate items: first notes="spicy", second notes="no vegetables"
+  * If customer says "2 زنجر، واحد حار وواحد بدون خضار" → extract:
+    [{"name": "Zinger Sandwich", "quantity": 1, "notes": "spicy"}, {"name": "Zinger Sandwich", "quantity": 1, "notes": "no vegetables"}]
+  * NEVER combine them into one item with quantity 2 when they have different notes
   * These go in the item's "notes" field — update the relevant item even if mentioned earlier
   * NEVER ignore real customization requests
 - For address corrections (CRITICAL):
@@ -1569,28 +1573,47 @@ async function _processMessage(body, req, callId) {
       });
 
       if (existingOrder) {
-        // Merge new items with existing items instead of replacing
-        const existingItemsMap = {};
-        for (const item of existingOrder.items) {
-          const key = item.name + (item.notes || '');
-          existingItemsMap[key] = item.toObject ? item.toObject() : { ...item };
-        }
-        for (const item of orderItems) {
-          const key = item.name + (item.notes || '');
-          if (existingItemsMap[key]) {
-            existingItemsMap[key].quantity += item.quantity;
+        // Smart merge: start with existing items as base
+        // New orderItems from draft represent what was JUST added in this turn
+        // We need to ADD them on top of existing, not replace
+        const existingItems = existingOrder.items.map(i => i.toObject ? i.toObject() : { ...i });
+
+        for (const newItem of orderItems) {
+          // Find if this exact item (by name only, ignoring notes) already exists
+          const existingIdx = existingItems.findIndex(e =>
+            e.name.toLowerCase() === newItem.name.toLowerCase()
+          );
+
+          if (existingIdx >= 0) {
+            const existing = existingItems[existingIdx];
+            if (newItem.notes && newItem.notes !== existing.notes) {
+              // Different note on same item
+              // If existing item has no note and new one does — apply note to existing
+              if (!existing.notes) {
+                existingItems[existingIdx].notes = newItem.notes;
+              } else {
+                // Both have different notes — this is a separate item variant, add as new row
+                existingItems.push(newItem);
+              }
+            } else if (newItem.quantity > existing.quantity) {
+              // More of the same item ordered
+              existingItems[existingIdx].quantity = newItem.quantity;
+            }
+            // If same name, same notes, same quantity — do nothing (already exists)
           } else {
-            existingItemsMap[key] = item;
+            // Genuinely new item — add it
+            existingItems.push(newItem);
           }
         }
-        const mergedItems = Object.values(existingItemsMap);
-        const mergedTotal = mergedItems.reduce((sum, item) => {
+
+        const mergedTotal = existingItems.reduce((sum, item) => {
           const mi = findMenuItem(agent.menu, item.name);
           return sum + (mi?.price || 0) * (item.quantity || 1);
         }, 0);
+
         await Order.updateOne({ _id: existingOrder._id }, {
           $set: {
-            items: mergedItems,
+            items: existingItems,
             deliveryAddress: orderDraft.deliveryAddress || existingOrder.deliveryAddress,
             orderType: orderDraft.orderType,
             customerName: draft.customerName,
@@ -1598,8 +1621,7 @@ async function _processMessage(body, req, callId) {
             notes: orderDraft.notes || existingOrder.notes || null,
           }
         });
-        // Update total for confirmation message
-        Object.assign(orderDraft, { items: mergedItems });
+        Object.assign(orderDraft, { items: existingItems });
       } else {
         const raceCheck = await Order.findOne({
           callId, orderType: orderDraft.orderType, status: "confirmed",
