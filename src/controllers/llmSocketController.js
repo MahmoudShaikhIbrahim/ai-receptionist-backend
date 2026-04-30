@@ -506,9 +506,17 @@ STRICT RULES:
   * Arabic note "بدون خضار" → store as "no vegetables" in notes field
   * Your "response" field (what the agent says) stays in Arabic if customer speaks Arabic
   * But all JSON data fields must be in English for the restaurant staff
-- CRITICAL: ONLY extract items that are in the menu list above. If the customer says something that sounds like a menu item but is NOT in the menu, do NOT add it. The transcriber sometimes mishears — "شاورما" might get transcribed as "شوربة" — only add items with names that EXACTLY match the menu.
-- CRITICAL: Words like "spicy", "سبايسي", "حار", "extra", "بدون", "plain", "normal", "عادي" are CUSTOMIZATIONS/NOTES, NOT menu items. Never tell the customer "we don't have spicy" — spicy is always a note on any item.
-- If customer says "واحد سبايسي وواحد عادي" for an item → extract 2 of that item with notes "spicy" and "regular" respectively. Never reject this as unavailable.
+- CRITICAL: ONLY extract items that EXACTLY match the menu list above. Never invent item names.
+- The transcriber mishears — use these mappings to fix common mishearings:
+  * "ساندويتش" / "sandwich" alone (without "shawarma") → most likely "Zinger Sandwich"
+  * "شاورما" → "Shawarma Arabi"
+  * "عصير عبود" / "عبود جوز" → "Abood Juice"
+  * "chicken sandwish" / "chicken sandwich" → check if "Zinger Sandwich" or "Chicken Sandwich" is on the menu
+  * When unsure between two menu items, pick the one that sounds closest
+- CRITICAL: "spicy", "سبايسي", "حار", "extra", "بدون", "plain", "normal", "عادي" are CUSTOMIZATIONS/NOTES, NOT menu items.
+- If customer says "واحد سبايسي وواحد بدون خضار" for Zinger → extract TWO Zinger Sandwich items:
+  [{"name":"Zinger Sandwich","quantity":1,"notes":"spicy"},{"name":"Zinger Sandwich","quantity":1,"notes":"no vegetables"}]
+- NEVER extract only one note when customer mentioned two different customizations for two items
 - Required for booking: partySize + time + name. If ANY missing, ask for it.
 - Required for delivery: items + COMPLETE address (area + building + unit) + name. Ask for each missing piece.
 - CRITICAL: If orderType is already set in the current state, NEVER ask about it again. Go straight to the next missing piece.
@@ -1691,10 +1699,12 @@ async function _processMessage(body, req, callId) {
     // ── FALLBACK HINTS ────────────────────────────────────
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress)
       return { response: t("askDeliveryAddress", lang) };
-    // If address exists but has no unit number (no digits found), ask for it
+    // If address exists but has no unit number (no digits found), ask for it ONCE
+    // But only if the customer didn't just mention a number in this turn
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && orderDraft.deliveryAddress) {
       const hasUnitNumber = /\d+/.test(orderDraft.deliveryAddress);
-      if (!hasUnitNumber) {
+      const justSaidNumber = /\d+|zero|one|two|three|four|five|six|seven|eight|nine|hundred|مية|ميتين|متين|مئة/i.test(latestUserText);
+      if (!hasUnitNumber && !justSaidNumber) {
         return { response: lang === "ar" ? "رقم الشقة أو الوحدة؟" : "What's the apartment or unit number?" };
       }
     }
@@ -1713,17 +1723,26 @@ async function _processMessage(body, req, callId) {
     if (bookingFlowActive && draft.partySize && draft.requestedStart && !draft.customerName && orderDraft.items?.length === 0)
       return { response: t("askName", lang) };
 
-    // If GPT asks about order type but it's already set — override with next question
+    // If GPT asks about order type — check both the draft AND what was just extracted
+    const currentOrderType = orderDraft.orderType || orderExtracted.orderType;
     let finalResponse = aiResponse;
-    if (finalResponse && orderDraft.orderType) {
-      const asksOrderType = /توصيل ولا استلام|delivery or pickup|pickup or delivery|كيف بدك.*order|how.*order|دايني ولا|dine.?in or|شو بدك.*توصيل|توصيل.*استلام/i.test(finalResponse);
+
+    // If customer said delivery/pickup keywords in THIS message, never ask about it
+    const justSaidDelivery = /توصل|توصيل|يوصل|delivery|دليفري/i.test(latestUserText);
+    const justSaidPickup = /استلام|آخذه|pickup|تيك اواي/i.test(latestUserText);
+    if (justSaidDelivery && !orderDraft.orderType) orderDraft.orderType = "delivery";
+    if (justSaidPickup && !orderDraft.orderType) orderDraft.orderType = "pickup";
+
+    const effectiveOrderType = orderDraft.orderType || orderExtracted.orderType;
+    if (finalResponse && (effectiveOrderType || justSaidDelivery || justSaidPickup)) {
+      const asksOrderType = /توصيل ولا استلام|delivery or pickup|pickup or delivery|شو بدك.*توصيل|توصيل.*استلام|شو نوع|كيف بدك.*order/i.test(finalResponse);
       if (asksOrderType) {
-        // Override — go straight to next missing field
-        if (orderDraft.orderType === "delivery" && !orderDraft.deliveryAddress)
+        const ot = effectiveOrderType || (justSaidDelivery ? "delivery" : "pickup");
+        if (ot === "delivery" && !orderDraft.deliveryAddress)
           finalResponse = t("askDeliveryAddress", lang);
-        else if (orderDraft.orderType === "delivery" && orderDraft.deliveryAddress && !draft.customerName)
+        else if (ot === "delivery" && orderDraft.deliveryAddress && !draft.customerName)
           finalResponse = t("askOrderName", lang);
-        else if (orderDraft.orderType === "pickup" && !draft.requestedStart)
+        else if (ot === "pickup" && !draft.requestedStart)
           finalResponse = t("askPickupTime", lang);
         else if (!draft.customerName)
           finalResponse = t("askOrderName", lang);
