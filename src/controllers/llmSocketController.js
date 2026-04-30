@@ -660,14 +660,22 @@ function buildGoodbye(text, lang) {
 // English: "1 Shawarma Arabi and 2 Zinger Sandwiches"
 function buildItemsSummary(items, menu, lang) {
   if (!items?.length) return "";
-  const parts = items.map(i => {
+  // Consolidate items with same name — group by name, sum quantities
+  const grouped = {};
+  for (const i of items) {
+    const key = i.name;
+    if (!grouped[key]) grouped[key] = { ...i, quantity: 0 };
+    grouped[key].quantity += (i.quantity || 1);
+  }
+  const consolidated = Object.values(grouped);
+  const qtyWords = { 1:"", 2:"اثنين", 3:"ثلاثة", 4:"أربعة", 5:"خمسة", 6:"ستة", 7:"سبعة", 8:"ثمانية", 9:"تسعة", 10:"عشرة" };
+  const parts = consolidated.map(i => {
     const qty = i.quantity || 1;
     const name = i.name;
     if (lang === "ar") {
       const menuItem = menu?.find(m => m.name.toLowerCase() === name.toLowerCase());
       const arName = menuItem?.nameAr || menuItem?.arabicName || name;
       if (qty === 1) return arName;
-      const qtyWords = { 2:"اثنين", 3:"ثلاثة", 4:"أربعة", 5:"خمسة", 6:"ستة", 7:"سبعة", 8:"ثمانية", 9:"تسعة", 10:"عشرة" };
       return `${arName} ${qtyWords[qty] || qty}`;
     } else {
       if (qty === 1) return name;
@@ -752,9 +760,9 @@ async function _processMessage(body, req, callId) {
   // English fillers that should NOT cause language flip during Arabic conversation
   // Includes number words spoken in English (e.g. "two zero six" for apartment number)
   // Pure numbers, digits, or English number words spoken mid-Arabic-call (e.g. "206", "two zero six")
-  // should NEVER flip the language
-  const isPureNumber = /^[\d\s]+$/.test(latestUserText.trim()) ||
-    /^(zero|one|two|three|four|five|six|seven|eight|nine|ten|hundred|thousand|[\d]+)[\s\d]*(zero|one|two|three|four|five|six|seven|eight|nine|hundred|thousand|[\d]*)*$/i.test(latestUserText.trim());
+  // should NEVER flip the language — customer is just giving a number like an apartment number
+  const numberWords = /^(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|hundred|thousand)(\s+(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|hundred|thousand))*$/i;
+  const isPureNumber = /^[\d\s]+$/.test(latestUserText.trim()) || numberWords.test(latestUserText.trim());
   const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh)[\s\.\!\?]*$/i.test(latestUserText.trim()) || isPureNumber;
 
   if (hasArabicChars) {
@@ -1142,6 +1150,27 @@ async function _processMessage(body, req, callId) {
     } else {
       const existingOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 });
 
+      // If customer is adding new items (not just notes), re-open add flow
+      const isNewItemAddition = (
+        /بدي أضيف|بقدر أضيف|ممكن أضيف|كمان وحدة|كمان اثنين|add another|i want to add|want to add/i.test(latestUserText) ||
+        (looksLikeOrderIntent(latestUserText) && !/بدون|without|no |extra|حار|spicy|سبايسي|خضار|بصل|جبن|صوص|طحينية|tahini/i.test(latestUserText))
+      );
+      if (isNewItemAddition && existingOrder) {
+        const preservedType    = existingOrder.orderType;
+        const preservedAddress = existingOrder.deliveryAddress;
+        const preservedName    = existingOrder.customerName || draft.customerName;
+        orderDraft.items = []; orderDraft.status = null;
+        orderDraft.orderType = preservedType; orderDraft.deliveryAddress = preservedAddress;
+        draft.customerName = preservedName;
+        await Call.updateOne({ _id: freshCall._id }, { $set: {
+          "orderDraft.items": [], "orderDraft.status": null,
+          "orderDraft.orderType": preservedType,
+          "orderDraft.deliveryAddress": preservedAddress,
+          "bookingDraft.customerName": preservedName,
+        }});
+        return { response: lang === "ar" ? "أكيد! شو بدك تضيف؟" : "Sure! What would you like to add?" };
+      }
+
       // Check if customer is correcting the address
       const mentionsAddressCorrection = /غلط|مو صح|مش صح|لا مو|لأ مو|لا اصلاً|مش كذا|مش هيك|العنوان غلط|no it's|wrong|not right|actually|it's in|انها في|هي في|في الشارقة|في دبي|في ابوظبي|في عجمان|في عجمان|بدل|حط بدل|غير ال|replace|change.*address|عنوان ثاني|عنوان جديد/i.test(latestUserText);
       if (mentionsAddressCorrection && existingOrder) {
@@ -1396,7 +1425,9 @@ async function _processMessage(body, req, callId) {
     // GPT returning orderType:null doesn't mean we should clear it
     // GPT sometimes returns the string "null" instead of JSON null — treat both as null
     const rawAddr = orderExtracted.deliveryAddress;
-    if (rawAddr && rawAddr !== "null" && rawAddr !== "undefined" && rawAddr.trim().length > 3) {
+    const isNullAddr = !rawAddr || rawAddr === "null" || rawAddr === "undefined" || 
+      rawAddr === "NULL" || rawAddr.trim() === "" || rawAddr.trim().length <= 3;
+    if (!isNullAddr) {
       // Translate Arabic address words to English for storage
       orderDraft.deliveryAddress = translateToEnglishStorage(rawAddr);
     }
