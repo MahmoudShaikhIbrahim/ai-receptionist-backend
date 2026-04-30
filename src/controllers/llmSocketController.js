@@ -70,7 +70,7 @@ const R = {
   // Order
   orderConfirmedDelivery: (items, address, name, total) => ({
     en: `Perfect! ${items} on the way to ${address} for ${name}. Total: ${total} AED. Anything else?`,
-    ar: `تمام يا ${name}! الـ${items} رايح يوصلك على ${address}. المجموع ${total} درهم. في شي ثاني؟`,
+    ar: `تمام يا ${name}! ${items} رايح يوصلك. المجموع ${total} درهم. في شي ثاني؟`,
   }),
   orderConfirmedPickup: (items, name, time, total) => ({
     en: `Got it! ${items} ready for pickup under ${name}${time ? ` at ${time}` : ""}. Total: ${total} AED. Anything else?`,
@@ -646,6 +646,31 @@ function buildGoodbye(text, lang) {
   }
 }
 
+// ─── NATURAL ITEMS SUMMARY BUILDER ──────────────────────────────────────────
+// Builds natural language item summaries without "x1" notation
+// Arabic: "شاورما عربي وزنجر ساندويش اثنين"
+// English: "1 Shawarma Arabi and 2 Zinger Sandwiches"
+function buildItemsSummary(items, menu, lang) {
+  if (!items?.length) return "";
+  const parts = items.map(i => {
+    const qty = i.quantity || 1;
+    const name = i.name;
+    if (lang === "ar") {
+      const menuItem = menu?.find(m => m.name.toLowerCase() === name.toLowerCase());
+      const arName = menuItem?.nameAr || menuItem?.arabicName || name;
+      if (qty === 1) return arName;
+      const qtyWords = { 2:"اثنين", 3:"ثلاثة", 4:"أربعة", 5:"خمسة", 6:"ستة", 7:"سبعة", 8:"ثمانية", 9:"تسعة", 10:"عشرة" };
+      return `${arName} ${qtyWords[qty] || qty}`;
+    } else {
+      if (qty === 1) return name;
+      return `${qty} ${name}`;
+    }
+  });
+  if (parts.length === 1) return parts[0];
+  if (lang === "ar") return parts.join(" و");
+  return parts.slice(0,-1).join(", ") + " and " + parts[parts.length-1];
+}
+
 // ─── BOOKING ENGINE LOCK ──────────────────────────────────────────────────────
 const processingCalls = new Set();
 
@@ -718,9 +743,11 @@ async function _processMessage(body, req, callId) {
   // Short English fillers that may appear during an Arabic conversation
   // English fillers that should NOT cause language flip during Arabic conversation
   // Includes number words spoken in English (e.g. "two zero six" for apartment number)
-  const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh)[\s\.\!\?]*$/i.test(latestUserText.trim()) ||
-    /^[\d\s]+(zero|one|two|three|four|five|six|seven|eight|nine|hundred|thousand)?[\s\d]*$/i.test(latestUserText.trim()) ||
-    /^(zero|one|two|three|four|five|six|seven|eight|nine|hundred|thousand)[\s\d]*(zero|one|two|three|four|five|six|seven|eight|nine|hundred|thousand)?[\s\d]*$/i.test(latestUserText.trim());
+  // Pure numbers, digits, or English number words spoken mid-Arabic-call (e.g. "206", "two zero six")
+  // should NEVER flip the language
+  const isPureNumber = /^[\d\s]+$/.test(latestUserText.trim()) ||
+    /^(zero|one|two|three|four|five|six|seven|eight|nine|ten|hundred|thousand|[\d]+)[\s\d]*(zero|one|two|three|four|five|six|seven|eight|nine|hundred|thousand|[\d]*)*$/i.test(latestUserText.trim());
+  const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh)[\s\.\!\?]*$/i.test(latestUserText.trim()) || isPureNumber;
 
   if (hasArabicChars) {
     lang = "ar";
@@ -1313,12 +1340,19 @@ async function _processMessage(body, req, callId) {
         item?.name && !!findMenuItem(agent.menu?.filter(m => m.available), item.name)
       );
       for (const newItem of validItems) {
-        const existingIndex = orderDraft.items.findIndex(e => e.name.toLowerCase() === newItem.name.toLowerCase());
+        // Find matching item — prefer same-note match, fallback to no-note
+        const sameNoteIdx = orderDraft.items.findIndex(e =>
+          e.name.toLowerCase() === newItem.name.toLowerCase() && e.notes === newItem.notes
+        );
+        const noNoteIdx = orderDraft.items.findIndex(e =>
+          e.name.toLowerCase() === newItem.name.toLowerCase() && !e.notes
+        );
+        const existingIndex = sameNoteIdx >= 0 ? sameNoteIdx : noNoteIdx;
         if (existingIndex >= 0) {
           orderDraft.items[existingIndex].quantity = newItem.quantity || 1;
-          // Update notes if provided
           if (newItem.notes) orderDraft.items[existingIndex].notes = newItem.notes;
         } else {
+          // New item or new note variant — add separately
           orderDraft.items.push(newItem);
         }
       }
@@ -1477,14 +1511,7 @@ async function _processMessage(body, req, callId) {
           });
           const timeString   = new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" });
           // Use Arabic item names in Arabic responses
-      const itemsSummary = orderDraft.items.map(i => {
-        if (lang === 'ar') {
-          const menuItem = agent.menu?.find(m => m.name.toLowerCase() === i.name.toLowerCase());
-          const arabicName = menuItem?.nameAr || menuItem?.arabicName || i.name;
-          return `${arabicName} x${i.quantity || 1}`;
-        }
-        return `${i.name} x${i.quantity || 1}`;
-      }).join(", ");
+      const itemsSummary = buildItemsSummary(orderDraft.items, agent.menu, lang);
           console.log("✅ Dine-in confirmed");
           return { response: t("orderConfirmedDineIn", lang, draft.partySize, timeString, displayName, itemsSummary, total) };
         }
@@ -1650,14 +1677,7 @@ async function _processMessage(body, req, callId) {
         }
       });
 
-      const itemsSummary = orderDraft.items.map(i => {
-        if (lang === 'ar') {
-          const menuItem = agent.menu?.find(m => m.name.toLowerCase() === i.name.toLowerCase());
-          const arabicName = menuItem?.nameAr || menuItem?.arabicName || i.name;
-          return `${arabicName} x${i.quantity || 1}`;
-        }
-        return `${i.name} x${i.quantity || 1}`;
-      }).join(", ");
+      const itemsSummary = buildItemsSummary(orderDraft.items, agent.menu, lang);
       const timeStr = draft.requestedStart
         ? new Date(draft.requestedStart).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Dubai" })
         : null;
