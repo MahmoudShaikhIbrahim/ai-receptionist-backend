@@ -486,10 +486,17 @@ STRICT RULES:
     - "مشوي" → "grilled"
     - "بدون ثوم" → "no garlic"
   * If customer says "واحد سبايسي وواحد عادي" → extract as TWO separate items: first with notes="spicy", second with notes=null
-  * If customer says "واحد سبايسي وواحد بدون خضار" → extract as TWO separate items: first notes="spicy", second notes="no vegetables"
-  * If customer says "2 زنجر، واحد حار وواحد بدون خضار" → extract:
-    [{"name": "Zinger Sandwich", "quantity": 1, "notes": "spicy"}, {"name": "Zinger Sandwich", "quantity": 1, "notes": "no vegetables"}]
-  * NEVER combine them into one item with quantity 2 when they have different notes
+  * Multiple notes per item ARE allowed — combine them with comma:
+    - "no vegetables and spicy" → notes = "no vegetables, spicy"
+    - "بدون خضار وحار" → notes = "no vegetables, spicy"
+  * If customer says "both without vegetables, one spicy and one normal":
+    → item 1: notes = "no vegetables, spicy"
+    → item 2: notes = "no vegetables"
+  * If customer says "واحد سبايسي وواحد بدون خضار" with NO mention of shared note:
+    → item 1: notes = "spicy", item 2: notes = "no vegetables"
+  * If customer says "كلهم بدون خضار وواحد منهم حار":
+    → item 1: notes = "no vegetables, spicy", item 2: notes = "no vegetables"
+  * NEVER lose any note the customer mentioned — combine them all
   * These go in the item's "notes" field — update the relevant item even if mentioned earlier
   * NEVER ignore real customization requests
 - For address corrections (CRITICAL):
@@ -817,6 +824,18 @@ async function _processMessage(body, req, callId) {
     deliveryAddress: (freshCall.orderDraft?.deliveryAddress && freshCall.orderDraft.deliveryAddress !== "null") ? freshCall.orderDraft.deliveryAddress : null,
     notes:           freshCall.orderDraft?.notes           ?? null,
   };
+
+  // CRITICAL: If orderDraft is empty (add flow reset it) but there's a confirmed
+  // order in this call, restore the context so we don't ask delivery/address again
+  if (orderDraft.items.length === 0 && !orderDraft.orderType && orderDraft.status !== "confirmed") {
+    const priorOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 }).lean();
+    if (priorOrder) {
+      orderDraft.orderType       = priorOrder.orderType;
+      orderDraft.deliveryAddress = priorOrder.deliveryAddress;
+      if (!draft.customerName) draft.customerName = priorOrder.customerName;
+      console.log(`🔄 Restored context from prior order: ${priorOrder.orderType}, ${priorOrder.deliveryAddress}`);
+    }
+  }
 
   // ── BOOKING INTENT RESET ──────────────────────────────────
   if (looksLikeBookingIntent(latestUserText) && !looksLikeOrderIntent(latestUserText)) {
