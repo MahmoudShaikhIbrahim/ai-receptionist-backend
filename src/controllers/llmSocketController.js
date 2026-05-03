@@ -1317,6 +1317,21 @@ async function _processMessage(body, req, callId) {
       return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }
 
+    // Fast-path: if customer says ONLY a delivery/pickup keyword and we have items,
+    // set orderType immediately and ask next question — no GPT needed
+    const isOnlyOrderType = /^(توصيل|delivery|دليفري|توصل)[s.!?،]*$/i.test(latestUserText.trim());
+    const isOnlyPickup = /^(استلام|pickup|pick up|تيك اواي|آخذه)[s.!?،]*$/i.test(latestUserText.trim());
+    if ((isOnlyOrderType || isOnlyPickup) && orderDraft.items?.length > 0 && !orderDraft.orderType) {
+      const detectedType = isOnlyOrderType ? "delivery" : "pickup";
+      orderDraft.orderType = detectedType;
+      await Call.updateOne({ _id: freshCall._id }, { $set: { "orderDraft.orderType": detectedType } });
+      if (detectedType === "delivery") {
+        return { response: t("askDeliveryAddress", lang) };
+      } else {
+        return { response: t("askPickupTime", lang) };
+      }
+    }
+
     const returningCtxString = returningContext ||
       (confirmedBookingId ? "Has existing booking" : null) ||
       (confirmedOrderId   ? "Has existing order"   : null);

@@ -198,8 +198,10 @@ function handleLLMWebSocket(ws, req) {
         }
       }
 
-      // Skip if same text was processed very recently (within 3s)
-      if (latestUserText && latestUserText === lastProcessedText && now - lastProcessedTextTime < 3000) {
+      // Skip if same text was processed very recently (within 800ms)
+      // But NEVER skip notes/customizations — they are always real customer input
+      const hasNoteContent = /بدون|extra|اكسترا|خضار|بصل|جبن|صوص|طحينية|حار|spicy|سبايسي|without|no |sauce|tahini|زيادة/i.test(latestUserText);
+      if (latestUserText && latestUserText === lastProcessedText && now - lastProcessedTextTime < 800 && !hasNoteContent) {
         console.log(`⏭ Skipping duplicate text: "${latestUserText.slice(0,40)}"`);
         processedResponseIds.add(responseId);
         return;
