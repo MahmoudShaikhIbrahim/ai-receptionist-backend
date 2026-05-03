@@ -486,17 +486,18 @@ STRICT RULES:
     - "مشوي" → "grilled"
     - "بدون ثوم" → "no garlic"
   * If customer says "واحد سبايسي وواحد عادي" → extract as TWO separate items: first with notes="spicy", second with notes=null
-  * Multiple notes per item ARE allowed — combine them with comma:
-    - "no vegetables and spicy" → notes = "no vegetables, spicy"
-    - "بدون خضار وحار" → notes = "no vegetables, spicy"
-  * If customer says "both without vegetables, one spicy and one normal":
-    → item 1: notes = "no vegetables, spicy"
-    → item 2: notes = "no vegetables"
-  * If customer says "واحد سبايسي وواحد بدون خضار" with NO mention of shared note:
-    → item 1: notes = "spicy", item 2: notes = "no vegetables"
-  * If customer says "كلهم بدون خضار وواحد منهم حار":
-    → item 1: notes = "no vegetables, spicy", item 2: notes = "no vegetables"
-  * NEVER lose any note the customer mentioned — combine them all
+  * Multiple notes per item ARE allowed — combine them with comma
+  * SHARED notes: if customer says "both/all/كلهم/كلهن/الاثنين" before a note, it applies to ALL items:
+    - "both without vegetables, one spicy" → item 1: "no vegetables, spicy" | item 2: "no vegetables"
+    - "كلهم بدون خضار وواحد منهم حار" → item 1: "no vegetables, spicy" | item 2: "no vegetables"
+    - "الاثنين بدون بصل وواحد منهم اكسترا صوص" → item 1: "no onions, extra sauce" | item 2: "no onions"
+  * INDIVIDUAL notes: if customer says "one X and one Y" with no shared note:
+    - "واحد سبايسي وواحد بدون خضار" → item 1: "spicy" | item 2: "no vegetables"
+  * When notes come in a SEPARATE turn after items were already collected:
+    - Look at what's in the current order state and apply notes to matching items
+    - "وواحدة منهم تكون سبايسي" after "2 zingers both no vegetables" → item 1: "no vegetables, spicy" | item 2: "no vegetables"
+  * ALL notes must be in English in the JSON — translate Arabic notes to English
+  * NEVER lose any note the customer mentioned
   * These go in the item's "notes" field — update the relevant item even if mentioned earlier
   * NEVER ignore real customization requests
 - For address corrections (CRITICAL):
@@ -791,9 +792,14 @@ async function _processMessage(body, req, callId) {
   if (explicitArabic)  lang = "ar";
   if (explicitEnglish) lang = "en";
 
-  // Persist if changed
-  if (lang !== storedLang) {
+  // Only persist language if it's a REAL language signal, not just a number
+  // Numbers ("304", "206") are not language signals — don't let them flip stored lang
+  const isJustNumber = isPureNumber;
+  if (lang !== storedLang && !isJustNumber) {
     await Call.updateOne({ _id: freshCall._id }, { $set: { "meta.lang": lang } });
+  } else if (isJustNumber && storedLang) {
+    // Number spoken — restore to stored language, don't flip
+    lang = storedLang;
   }
   console.log(`🌐 Language: ${lang} (hasArabic: ${hasArabicChars}, stored: ${storedLang || "none"}, default: ${agentDefaultLang})`);
 
@@ -1119,7 +1125,7 @@ async function _processMessage(body, req, callId) {
       return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }
     // "لا" or "no" alone after confirmed order = goodbye
-    const isSimpleNo = /^(لا|no|nope|لأ|بس|bas|that's it|done)[\s\.\!\?،]*$/i.test(latestUserText.trim());
+    const isSimpleNo = /^(لا|no|nope|لأ|بس|bas|that's it|done|هيك|هيك بس|بس هيك|يلا|خلص|تمام بس)[\s\.\!\?،]*$/i.test(latestUserText.trim());
     if (isSimpleNo) {
       return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }
@@ -1800,7 +1806,7 @@ async function _processMessage(body, req, callId) {
 
     const effectiveOrderType = orderDraft.orderType || orderExtracted.orderType;
     if (finalResponse && (effectiveOrderType || justSaidDelivery || justSaidPickup)) {
-      const asksOrderType = /توصيل ولا استلام|delivery or pickup|pickup or delivery|شو بدك.*توصيل|توصيل.*استلام|شو نوع|كيف بدك.*order/i.test(finalResponse);
+      const asksOrderType = /توصيل ولا استلام|delivery or pickup|pickup or delivery|شو بدك.*توصيل|توصيل.*استلام|شو نوع|كيف بدك.*order|استلام.*توصيل/i.test(finalResponse);
       if (asksOrderType) {
         const ot = effectiveOrderType || (justSaidDelivery ? "delivery" : "pickup");
         if (ot === "delivery" && !orderDraft.deliveryAddress)
