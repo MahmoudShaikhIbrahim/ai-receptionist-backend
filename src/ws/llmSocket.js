@@ -58,6 +58,30 @@ function handleLLMWebSocket(ws, req) {
   // Dedup by user text — if same text is sent twice quickly, only process once
   let lastProcessedText = null;
   let lastProcessedTextTime = 0;
+  // Per-call mutex — only ONE request processes at a time
+  // Queue of pending requests waiting for the mutex
+  let mutexLocked = false;
+  const pendingQueue = [];
+  
+  function acquireCallMutex() {
+    return new Promise(resolve => {
+      if (!mutexLocked) {
+        mutexLocked = true;
+        resolve();
+      } else {
+        pendingQueue.push(resolve);
+      }
+    });
+  }
+  
+  function releaseCallMutex() {
+    if (pendingQueue.length > 0) {
+      const next = pendingQueue.shift();
+      next();
+    } else {
+      mutexLocked = false;
+    }
+  }
 
   // Send initial greeting dynamically from agent settings
   // Extract callId from URL path e.g. /llm/respond/call_xxx
@@ -211,6 +235,9 @@ function handleLLMWebSocket(ws, req) {
         lastProcessedTextTime = now;
       }
 
+      // Acquire mutex — wait for any in-progress request to finish first
+      await acquireCallMutex();
+
       // Mark as in-flight
       inFlightResponseIds.add(responseId);
       console.log("🗣 User:", latestUserText || "(none)");
@@ -220,9 +247,10 @@ function handleLLMWebSocket(ws, req) {
         req
       );
 
-      // Mark as done
+      // Mark as done and release mutex
       inFlightResponseIds.delete(responseId);
       processedResponseIds.add(responseId);
+      releaseCallMutex();
 
       if (!result?.response) return;
 
@@ -246,6 +274,7 @@ function handleLLMWebSocket(ws, req) {
       console.error("❌ Error:", err.message || err);
       const responseId = data?.response_id ?? 0;
       inFlightResponseIds.delete(responseId);
+      releaseCallMutex();
       safeSend(ws, {
         response_id: responseId,
         content: "Sorry, something went wrong. Could you repeat that?",
