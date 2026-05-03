@@ -1442,21 +1442,44 @@ async function _processMessage(body, req, callId) {
       const validItems = normalizedItems.filter(item =>
         item?.name && !!findMenuItem(agent.menu?.filter(m => m.available), item.name)
       );
+      // REPLACE strategy: GPT sees full transcript so its extraction is authoritative
+      // Don't append — replace matching items with GPT's version to avoid accumulation
       for (const newItem of validItems) {
-        // Find matching item — prefer same-note match, fallback to no-note
-        const sameNoteIdx = orderDraft.items.findIndex(e =>
-          e.name.toLowerCase() === newItem.name.toLowerCase() && e.notes === newItem.notes
+        // Find by name only (ignore notes for matching)
+        const existingByName = orderDraft.items.filter(e =>
+          e.name.toLowerCase() === newItem.name.toLowerCase()
         );
-        const noNoteIdx = orderDraft.items.findIndex(e =>
-          e.name.toLowerCase() === newItem.name.toLowerCase() && !e.notes
-        );
-        const existingIndex = sameNoteIdx >= 0 ? sameNoteIdx : noNoteIdx;
-        if (existingIndex >= 0) {
-          orderDraft.items[existingIndex].quantity = newItem.quantity || 1;
-          if (newItem.notes) orderDraft.items[existingIndex].notes = newItem.notes;
-        } else {
-          // New item or new note variant — add separately
+        
+        if (existingByName.length === 0) {
+          // Truly new item — add it
           orderDraft.items.push(newItem);
+        } else {
+          // Item exists — check if this is a new note variant or an update
+          const exactMatch = orderDraft.items.findIndex(e =>
+            e.name.toLowerCase() === newItem.name.toLowerCase() && 
+            (e.notes || null) === (newItem.notes || null)
+          );
+          if (exactMatch >= 0) {
+            // Same item, same note — just update quantity
+            orderDraft.items[exactMatch].quantity = newItem.quantity || 1;
+          } else {
+            // Same item, different note — this is a variant, add separately
+            // BUT only if total count of this item doesn't exceed what was ordered
+            const totalExisting = existingByName.reduce((s, i) => s + (i.quantity || 1), 0);
+            const totalNew = validItems.filter(i => i.name.toLowerCase() === newItem.name.toLowerCase())
+              .reduce((s, i) => s + (i.quantity || 1), 0);
+            if (totalExisting < totalNew) {
+              orderDraft.items.push(newItem);
+            } else {
+              // Apply note to first matching item without a note
+              const noNoteIdx = orderDraft.items.findIndex(e =>
+                e.name.toLowerCase() === newItem.name.toLowerCase() && !e.notes
+              );
+              if (noNoteIdx >= 0 && newItem.notes) {
+                orderDraft.items[noNoteIdx].notes = newItem.notes;
+              }
+            }
+          }
         }
       }
     }
@@ -1833,8 +1856,10 @@ async function _processMessage(body, req, callId) {
     const effectiveOrderType = orderDraft.orderType || orderExtracted.orderType;
     if (finalResponse && (effectiveOrderType || justSaidDelivery || justSaidPickup)) {
       const asksOrderType = /توصيل ولا استلام|delivery or pickup|pickup or delivery|شو بدك.*توصيل|توصيل.*استلام|شو نوع|كيف بدك.*order|استلام.*توصيل/i.test(finalResponse);
-      if (asksOrderType) {
-        const ot = effectiveOrderType || (justSaidDelivery ? "delivery" : "pickup");
+      // Also override if we already have address — no need to ask order type
+      const alreadyHasAddress = !!(orderDraft.deliveryAddress && orderDraft.deliveryAddress !== "null");
+      if (asksOrderType || (alreadyHasAddress && finalResponse && /توصيل|استلام|delivery|pickup/i.test(finalResponse) && !/وين|address|عنوان/.test(finalResponse))) {
+        const ot = effectiveOrderType || (justSaidDelivery ? "delivery" : "pickup") || (alreadyHasAddress ? "delivery" : null);
         if (ot === "delivery" && !orderDraft.deliveryAddress)
           finalResponse = t("askDeliveryAddress", lang);
         else if (ot === "delivery" && orderDraft.deliveryAddress && !draft.customerName)
