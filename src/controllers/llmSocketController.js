@@ -832,13 +832,16 @@ async function _processMessage(body, req, callId) {
   };
 
   // CRITICAL: If orderDraft is empty (add flow reset it) but there's a confirmed
-  // order in this call, restore the context so we don't ask delivery/address again
+  // order in this call, restore ONLY orderType/address/name — NOT items
+  // Items must start empty so the merge doesn't double-count
   if (orderDraft.items.length === 0 && !orderDraft.orderType && orderDraft.status !== "confirmed") {
     const priorOrder = await Order.findOne({ callId, status: { $in: ["confirmed","preparing"] } }).sort({ createdAt: -1 }).lean();
     if (priorOrder) {
       orderDraft.orderType       = priorOrder.orderType;
       orderDraft.deliveryAddress = priorOrder.deliveryAddress;
+      orderDraft.notes           = null; // fresh notes for new addition
       if (!draft.customerName) draft.customerName = priorOrder.customerName;
+      // DO NOT restore items — they live in the DB order and will be merged at save time
       console.log(`🔄 Restored context from prior order: ${priorOrder.orderType}, ${priorOrder.deliveryAddress}`);
     }
   }
@@ -1219,6 +1222,29 @@ async function _processMessage(body, req, callId) {
       }
 
       // Check if customer wants to remove an item from confirmed order
+      // Quantity correction — "الزنجر اثنين بس" = fix qty to 2
+      const mentionsQtyCorrection = /\b(بس|only|just|فقط|هم|هن)\b/i.test(latestUserText) &&
+        /\d+|واحد|اثنين|ثلاثة|أربعة|خمسة/.test(latestUserText);
+      if (mentionsQtyCorrection && existingOrder) {
+        const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
+        if (mins <= 10) {
+          const { orderExtracted: corrEx } = await extractAndRespond(latestUserText, draft, orderDraft, transcript, agent, null, lang);
+          if (corrEx?.items?.length > 0) {
+            const correctedItems = existingOrder.items.map(i => i.toObject ? i.toObject() : {...i});
+            for (const corrItem of corrEx.items) {
+              const idx = correctedItems.findIndex(e => e.name.toLowerCase() === corrItem.name.toLowerCase());
+              if (idx >= 0) correctedItems[idx].quantity = corrItem.quantity;
+            }
+            const corrTotal = correctedItems.reduce((sum, item) => {
+              const mi = findMenuItem(agent.menu, item.name);
+              return sum + (mi?.price || 0) * (item.quantity || 1);
+            }, 0);
+            await Order.updateOne({ _id: existingOrder._id }, { $set: { items: correctedItems, total: corrTotal } });
+            return { response: lang === "ar" ? "تمام، عدّلنا الطلب. في شي ثاني؟" : "Done! Updated. Anything else?" };
+          }
+        }
+      }
+
       const mentionsRemoveItem = /شيل|احذف|ما طلبت|مو طلبت|remove|didn't order|never ordered/i.test(latestUserText);
       if (mentionsRemoveItem && existingOrder) {
         const mins = (Date.now() - new Date(existingOrder.createdAt).getTime()) / 60000;
