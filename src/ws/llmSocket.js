@@ -238,6 +238,16 @@ function handleLLMWebSocket(ws, req) {
       // Acquire mutex — wait for any in-progress request to finish first
       await acquireCallMutex();
 
+      // After waiting, check if this is a stale request — if newer text exists,
+      // skip this one to avoid processing outdated transcripts
+      if (latestUserText && lastProcessedText && lastProcessedText.length > latestUserText.length &&
+          lastProcessedText.includes(latestUserText.slice(0, Math.min(20, latestUserText.length)))) {
+        console.log(`⏭ Stale request, newer text already processed: "${latestUserText.slice(0,30)}"`);
+        processedResponseIds.add(responseId);
+        releaseCallMutex();
+        return;
+      }
+
       // Mark as in-flight
       inFlightResponseIds.add(responseId);
       console.log("🗣 User:", latestUserText || "(none)");

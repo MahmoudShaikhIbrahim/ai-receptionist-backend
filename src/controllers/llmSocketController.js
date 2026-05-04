@@ -1361,6 +1361,25 @@ async function _processMessage(body, req, callId) {
     }
   }
 
+  // FAST PATH: trivial responses skip GPT entirely
+  // Greetings and small fillers when no order/booking active
+  const trivialInput = latestUserText?.trim();
+  if (!bookingFlowActive && !orderFlowActive && !cancelIntent && !modifyIntent &&
+      orderDraft.items.length === 0 && !draft.partySize) {
+    if (/^(الو|ألو|hello|hi|hey|مرحبا|أهلا|اهلا)[\s\.\!\?،]*$/i.test(trivialInput)) {
+      return { response: lang === "ar" ? "أهلين! شو بدك تطلب؟" : "Hi! What would you like to order?" };
+    }
+    if (/^(مدري|i don't know|idk|not sure|ما بعرف)[\s\.\!\?،]*$/i.test(trivialInput)) {
+      return { response: lang === "ar" ? "في عنا شاورما، زنجر، عصير وأكثر — شو بيشتهيك؟" : "We have shawarma, zinger, juice and more — what sounds good?" };
+    }
+    if (/^(يعطيك العافية|الله يعافيك|good day|good morning|good evening)[\s\.\!\?،]*$/i.test(trivialInput)) {
+      return { response: lang === "ar" ? "الله يعافيك! شو بدك تطلب؟" : "Thank you! What would you like to order?" };
+    }
+    if (/^(شكراً|شكرا|thanks|thank you|tnx)[\s\.\!\?،]*$/i.test(trivialInput)) {
+      return { response: lang === "ar" ? "تسلم! شو بدك تطلب؟" : "Thanks! What would you like to order?" };
+    }
+  }
+
   // ── ACTIVE FLOW ───────────────────────────────────────────
   if (bookingFlowActive || orderFlowActive || cancelIntent || modifyIntent) {
 
@@ -1817,8 +1836,13 @@ async function _processMessage(body, req, callId) {
     }
 
     // ── FALLBACK HINTS ────────────────────────────────────
-    if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress)
-      return { response: t("askDeliveryAddress", lang) };
+    if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress) {
+      // Don't ask if the message we just processed already had address content
+      const hasAddressContent = /\d+|الميدان|الخان|بناية|building|tower|street/i.test(latestUserText) && latestUserText.length > 8;
+      if (!hasAddressContent) {
+        return { response: t("askDeliveryAddress", lang) };
+      }
+    }
     // If address exists but has no unit number (no digits found), ask for it ONCE
     // But only if the customer didn't just mention a number in this turn
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && orderDraft.deliveryAddress) {
