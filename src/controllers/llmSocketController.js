@@ -1777,31 +1777,41 @@ async function _processMessage(body, req, callId) {
         // We need to ADD them on top of existing, not replace
         const existingItems = existingOrder.items.map(i => i.toObject ? i.toObject() : { ...i });
 
-        for (const newItem of orderItems) {
-          // Find if this exact item (by name only, ignoring notes) already exists
-          const existingIdx = existingItems.findIndex(e =>
-            e.name.toLowerCase() === newItem.name.toLowerCase()
-          );
+        // GPT sees full transcript so orderItems includes BOTH existing AND new items.
+        // Only add the DIFFERENCE — what's new beyond what's already in the order.
+        
+        // Tally what's already confirmed
+        const confirmedCounts = {};
+        for (const item of existingItems) {
+          const key = item.name.toLowerCase();
+          confirmedCounts[key] = (confirmedCounts[key] || 0) + (item.quantity || 1);
+        }
 
-          if (existingIdx >= 0) {
-            const existing = existingItems[existingIdx];
-            if (newItem.notes && newItem.notes !== existing.notes) {
-              // Different note on same item
-              // If existing item has no note and new one does — apply note to existing
-              if (!existing.notes) {
-                existingItems[existingIdx].notes = newItem.notes;
-              } else {
-                // Both have different notes — this is a separate item variant, add as new row
-                existingItems.push(newItem);
-              }
-            } else if (newItem.quantity > existing.quantity) {
-              // More of the same item ordered
-              existingItems[existingIdx].quantity = newItem.quantity;
-            }
-            // If same name, same notes, same quantity — do nothing (already exists)
-          } else {
-            // Genuinely new item — add it
-            existingItems.push(newItem);
+        // Tally what GPT extracted from full transcript
+        const extractedCounts = {};
+        const extractedNotes = {};
+        for (const item of orderItems) {
+          const key = item.name.toLowerCase();
+          extractedCounts[key] = (extractedCounts[key] || 0) + (item.quantity || 1);
+          if (item.notes) extractedNotes[key] = item.notes;
+        }
+
+        // Add only genuinely new items (qty difference)
+        for (const [key, totalQty] of Object.entries(extractedCounts)) {
+          const alreadyHave = confirmedCounts[key] || 0;
+          const toAdd = totalQty - alreadyHave;
+          if (toAdd > 0) {
+            const menuItem = agent.menu?.find(m => m.name.toLowerCase() === key);
+            existingItems.push({
+              name: menuItem?.name || key,
+              quantity: toAdd,
+              extras: [],
+              notes: extractedNotes[key] || null,
+            });
+          } else if (toAdd === 0 && extractedNotes[key]) {
+            // Same qty but note update — apply to existing
+            const idx = existingItems.findIndex(e => e.name.toLowerCase() === key && !e.notes);
+            if (idx >= 0) existingItems[idx].notes = extractedNotes[key];
           }
         }
 

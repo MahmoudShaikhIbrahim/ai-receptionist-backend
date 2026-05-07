@@ -214,13 +214,15 @@ function handleLLMWebSocket(ws, req) {
         return;
       }
 
-      // Skip if this is an older partial of what we already processed
-      const alreadyProcessedLonger = latestUserText && lastProcessedText &&
+      // Skip ONLY if this text is a true prefix of what was already processed
+      // i.e. lastProcessedText STARTS WITH this text (it's an older partial build-up)
+      // Do NOT skip if it's a completely different sentence
+      const isOlderPartial = latestUserText && lastProcessedText &&
           lastProcessedText.length > latestUserText.length + 3 &&
-          lastProcessedText.includes(latestUserText.trim().slice(0, Math.min(10, latestUserText.trim().length))) &&
+          lastProcessedText.startsWith(latestUserText.trim()) &&
           now - lastProcessedTextTime < 3000;
-      if (alreadyProcessedLonger) {
-        console.log(`Older partial: "${latestUserText.slice(0,30)}"`);
+      if (isOlderPartial) {
+        console.log(`Older partial (prefix): "${latestUserText.slice(0,30)}"`);
         processedResponseIds.add(responseId);
         return;
       }
@@ -242,10 +244,11 @@ function handleLLMWebSocket(ws, req) {
       // Acquire mutex
       await acquireCallMutex();
 
-      // Final stale check after mutex
+      // Final stale check after mutex — only skip true prefixes
       const staleAfterMutex = latestUserText && lastProcessedText &&
           lastProcessedText.length > latestUserText.length + 5 &&
-          lastProcessedText.includes(latestUserText.trim().slice(0, Math.min(10, latestUserText.trim().length)));
+          lastProcessedText.startsWith(latestUserText.trim()) &&
+          now - lastProcessedTextTime < 2000;
       if (staleAfterMutex) {
         console.log(`Stale after mutex: "${latestUserText.slice(0,30)}"`);
         processedResponseIds.add(responseId);
