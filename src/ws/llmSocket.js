@@ -202,43 +202,58 @@ function handleLLMWebSocket(ws, req) {
         return;
       }
 
-      // Smart dedup: Retell sends multiple response_required events as transcript builds.
-      // Wait 400ms to see if a longer/updated version arrives before processing.
+      // DEDUP STRATEGY:
+      // Retell sends partials as transcription builds: "بدي" -> "بدي 2" -> "بدي 2 زنجر ساندويش"
+      // We want to process ONLY the final longest version.
       const now = Date.now();
 
-      // If this text ends mid-sentence (cut off by transcriber), wait briefly
-      const looksIncomplete = latestUserText && (
-        /[،,،]$/.test(latestUserText.trim()) ||           // ends with comma
-        /(بدي|بس|و|ال|آه|أنا|في|من|على|عم)$/i.test(latestUserText.trim()) || // ends with Arabic continuation word
-        latestUserText.trim().length < 8                  // very short — likely partial
-      );
-
-      if (looksIncomplete) {
-        // Wait to see if more arrives
-        await new Promise(r => setTimeout(r, 500));
-        // If we got superseded by a newer response_id, skip this one
-        if (processedResponseIds.has(responseId) || inFlightResponseIds.has(responseId)) {
-          return;
-        }
-      }
-
-      // Skip if same text was processed very recently (within 800ms)
-      // But NEVER skip notes/customizations — they are always real customer input
-      const hasNoteContent = /بدون|extra|اكسترا|خضار|بصل|جبن|صوص|طحينية|حار|spicy|سبايسي|without|no |sauce|tahini|زيادة/i.test(latestUserText);
-      if (latestUserText && latestUserText === lastProcessedText && now - lastProcessedTextTime < 800 && !hasNoteContent) {
-        console.log(`⏭ Skipping duplicate text: "${latestUserText.slice(0,40)}"`);
+      // Skip exact duplicates
+      if (latestUserText && latestUserText === lastProcessedText && now - lastProcessedTextTime < 5000) {
+        console.log(`Exact duplicate: "${latestUserText.slice(0,40)}"`);
         processedResponseIds.add(responseId);
         return;
       }
+
+      // Skip if this is an older partial of what we already processed
+      const alreadyProcessedLonger = latestUserText && lastProcessedText &&
+          lastProcessedText.length > latestUserText.length + 3 &&
+          lastProcessedText.includes(latestUserText.trim().slice(0, Math.min(10, latestUserText.trim().length))) &&
+          now - lastProcessedTextTime < 3000;
+      if (alreadyProcessedLonger) {
+        console.log(`Older partial: "${latestUserText.slice(0,30)}"`);
+        processedResponseIds.add(responseId);
+        return;
+      }
+
+      // Wait for transcript to stabilize
+      const looksIncomplete = !latestUserText || latestUserText.trim().length < 10 ||
+        /(بدي|و|آه|اه|أنا|في|من|على|كمان)$/.test(latestUserText.trim());
+      await new Promise(r => setTimeout(r, looksIncomplete ? 700 : 350));
+
+      // After wait - if already processed skip
+      if (processedResponseIds.has(responseId)) return;
+
+      // Update tracking
       if (latestUserText) {
         lastProcessedText = latestUserText;
         lastProcessedTextTime = now;
       }
 
-      // Acquire mutex — wait for any in-progress request to finish first
+      // Acquire mutex
       await acquireCallMutex();
 
-      // Mark as in-flight
+      // Final stale check after mutex
+      const staleAfterMutex = latestUserText && lastProcessedText &&
+          lastProcessedText.length > latestUserText.length + 5 &&
+          lastProcessedText.includes(latestUserText.trim().slice(0, Math.min(10, latestUserText.trim().length)));
+      if (staleAfterMutex) {
+        console.log(`Stale after mutex: "${latestUserText.slice(0,30)}"`);
+        processedResponseIds.add(responseId);
+        releaseCallMutex();
+        return;
+      }
+
+            // Mark as in-flight
       inFlightResponseIds.add(responseId);
       console.log("🗣 User:", latestUserText || "(none)");
 

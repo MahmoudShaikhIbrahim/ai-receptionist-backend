@@ -775,7 +775,8 @@ async function _processMessage(body, req, callId) {
   // Pure numbers, digits, or English number words spoken mid-Arabic-call (e.g. "206", "two zero six")
   // should NEVER flip the language — customer is just giving a number like an apartment number
   const numberWords = /^(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|hundred|thousand)(\s+(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|hundred|thousand))*$/i;
-  const isPureNumber = /^[\d\s]+$/.test(latestUserText.trim()) || numberWords.test(latestUserText.trim());
+  const strippedForNumber = latestUserText.trim().replace(/[\.\!\?،,]+$/, ''); // strip trailing punctuation
+  const isPureNumber = /^[\d\s]+$/.test(strippedForNumber) || numberWords.test(strippedForNumber);
   const isEnglishFiller = /^(ok|okay|yes|no|yeah|nope|hi|hey|hello|sure|great|thanks|bye|good|fine|right|hmm|uh|ah|oh)[\s\.\!\?]*$/i.test(latestUserText.trim()) || isPureNumber;
 
   if (hasArabicChars) {
@@ -835,6 +836,9 @@ async function _processMessage(body, req, callId) {
     deliveryAddress: (freshCall.orderDraft?.deliveryAddress && freshCall.orderDraft.deliveryAddress !== "null") ? freshCall.orderDraft.deliveryAddress : null,
     notes:           freshCall.orderDraft?.notes           ?? null,
   };
+
+  // If we're in "adding to order" mode, treat as active order flow even with empty items
+  const isAddingToOrder = freshCall.meta?.addingToOrder === true;
 
   // CRITICAL: If orderDraft is empty (add flow reset it) but there's a confirmed
   // order in this call, restore ONLY orderType/address/name — NOT items
@@ -1017,6 +1021,7 @@ async function _processMessage(body, req, callId) {
   const orderFlowActive =
     agent.features?.orders === true && (
       !!orderDraft.items?.length || !!orderDraft.orderType ||
+      isAddingToOrder ||  // in add-to-order flow, always treat as order active
       looksLikeOrderIntent(latestUserText) ||
       looksLikeOrderIntent(recentTranscriptText)
     );
@@ -1364,6 +1369,7 @@ async function _processMessage(body, req, callId) {
             "orderDraft.orderType":        preservedType,
             "orderDraft.deliveryAddress":  preservedAddress,
             "bookingDraft.customerName":   preservedName,
+            "meta.addingToOrder":          true,
           }
         });
         return { response: lang === "ar" ? "أكيد! شو بدك تضيف؟" : "Sure! What would you like to add?" };
@@ -1745,7 +1751,12 @@ async function _processMessage(body, req, callId) {
     }
 
     // ── PICKUP / DELIVERY ──────────────────────────────────
-    if (pickupComplete || deliveryComplete) {
+    // Clear addingToOrder flag now that we have items
+  if (isAddingToOrder && orderDraft.items?.length > 0) {
+    await Call.updateOne({ _id: freshCall._id }, { $set: { "meta.addingToOrder": false } });
+  }
+
+  if (pickupComplete || deliveryComplete) {
       // Check for existing order in THIS call first (for add-to-order flow)
       // then fall back to returning caller's order
       const existingOrder =
