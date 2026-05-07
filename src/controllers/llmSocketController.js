@@ -420,13 +420,18 @@ STRICT RULES:
 - Current time is ${currentTimeStr}. When customer says relative time ("in X minutes", "بعد ساعة", "after X hours"), calculate actual time from current Dubai time and return HH:MM 24hr.
 - If customer says "book a table" or "احجز طاولة" with NO food items mentioned, this is BOOKING ONLY. Do NOT set orderType. Do NOT ask about order type.
 - NEVER set orderType to "dineIn" for a pure table reservation with no food items ordered.
-- ALWAYS extract orderType from ANY language form ONLY when food items are being ordered:
-  * Arabic delivery: "توصيل", "يوصلوا", "ابعتوه", "وصلوه" = "delivery"
-  * Arabic pickup: "استلام", "آخذه", "أجي آخذه", "تيك اواي" = "pickup"
-  * Arabic dineIn: "نجلس", "نأكل هناك", "أكل داخل", "دايني" = "dineIn" (ONLY with food items)
-  * English delivery: "delivery", "deliver it", "bring it to me" = "delivery"
-  * English pickup: "pickup", "pick up", "collect", "take away" = "pickup"
-  * English dineIn: "dine in", "eat here", "eat at the restaurant" = "dineIn" (ONLY with food items)
+- orderType ONLY when customer EXPLICITLY says delivery/pickup/dine-in — NEVER guess:
+  * "توصيل"/"delivery"/"ابعتوه" = "delivery"
+  * "استلام"/"pickup"/"تيك اواي" = "pickup"
+  * "نجلس"/"dine in"/"نأكل هناك" = "dineIn" (ONLY with food items)
+  * "الاثنين بدون خضار" = null (item notes, NOT orderType)
+  * "كلهم حار" = null (item notes, NOT orderType)
+  * If no explicit delivery/pickup/dineIn word → orderType MUST be null
+- partySize: BOOKING ONLY — number of people for table reservation:
+  * "الاثنين يكونوا بدون خضار" → partySize = null (الاثنين = both ITEMS)
+  * "كلهم" → partySize = null (refers to items)
+  * "أربعة أشخاص"/"4 people" during booking → partySize = 4
+  * ONLY set partySize when customer mentions people/guests for a table
 - For names: extract ONLY proper names (محمود، سارة، Ahmed، etc). Store as-is.
 - CRITICAL: NEVER extract sentences or phrases as names. These are NOT names:
   * "أنا لسه حاكيلك" — this means "I'm still talking to you", NOT a name
@@ -996,9 +1001,16 @@ async function _processMessage(body, req, callId) {
   const cancelIntent = looksLikeCancelIntent(latestUserText);
   const modifyIntent = looksLikeModifyIntent(latestUserText);
 
+  // partySize extracted from "الاثنين/both/all" in an order context is NOT a booking signal
+  // Clear it if we already have order items
+  if (draft.partySize && orderDraft.items?.length > 0) {
+    draft.partySize = null;
+  }
+
   const bookingFlowActive =
-    !!draft.partySize || !!draft.requestedStart ||
-    (!returnConfirmed && !!draft.customerName) ||
+    (!!draft.partySize && orderDraft.items?.length === 0) || // only booking if no order items
+    !!draft.requestedStart ||
+    (!returnConfirmed && !!draft.customerName && orderDraft.items?.length === 0) ||
     looksLikeBookingIntent(latestUserText) ||
     looksLikeBookingIntent(recentTranscriptText);
 
@@ -1366,17 +1378,19 @@ async function _processMessage(body, req, callId) {
   const trivialInput = latestUserText?.trim();
   if (!bookingFlowActive && !orderFlowActive && !cancelIntent && !modifyIntent &&
       orderDraft.items.length === 0 && !draft.partySize) {
-    if (/^(الو|ألو|hello|hi|hey|مرحبا|أهلا|اهلا)[\s\.\!\?،]*$/i.test(trivialInput)) {
+    // Strip punctuation for matching
+    const stripped = (trivialInput || '').replace(/[،,\.\!\?\s]+/g, ' ').trim();
+    if (/^(الو|ألو|hello|hi|hey|مرحبا|أهلا|اهلا|هلا|هلو|السلام عليكم|وعليكم السلام)$/i.test(stripped)) {
       return { response: lang === "ar" ? "أهلين! شو بدك تطلب؟" : "Hi! What would you like to order?" };
     }
-    if (/^(مدري|i don't know|idk|not sure|ما بعرف)[\s\.\!\?،]*$/i.test(trivialInput)) {
+    if (/^(مرحبا يعطيك العافية|يعطيك العافية|الله يعافيك|هلا والله|أهلاً وسهلاً فيك|good day|good morning|good evening)$/i.test(stripped)) {
+      return { response: lang === "ar" ? "الله يعافيك! شو بدك؟" : "Thank you! What can I get you?" };
+    }
+    if (/^(شكراً|شكرا|thanks|thank you|tnx|مشكور|تسلم)$/i.test(stripped)) {
+      return { response: lang === "ar" ? "تسلم! شو بدك تطلب؟" : "Thanks! What would you like?" };
+    }
+    if (/^(مدري|i don't know|idk|not sure|ما بعرف|ما أدري)$/i.test(stripped)) {
       return { response: lang === "ar" ? "في عنا شاورما، زنجر، عصير وأكثر — شو بيشتهيك؟" : "We have shawarma, zinger, juice and more — what sounds good?" };
-    }
-    if (/^(يعطيك العافية|الله يعافيك|good day|good morning|good evening)[\s\.\!\?،]*$/i.test(trivialInput)) {
-      return { response: lang === "ar" ? "الله يعافيك! شو بدك تطلب؟" : "Thank you! What would you like to order?" };
-    }
-    if (/^(شكراً|شكرا|thanks|thank you|tnx)[\s\.\!\?،]*$/i.test(trivialInput)) {
-      return { response: lang === "ar" ? "تسلم! شو بدك تطلب؟" : "Thanks! What would you like to order?" };
     }
   }
 
