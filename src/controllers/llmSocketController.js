@@ -1799,56 +1799,52 @@ async function _processMessage(body, req, callId) {
       if (existingOrder) {
         const existingItems = existingOrder.items.map(i => i.toObject ? i.toObject() : { ...i });
 
-        // GPT extracts items with notes as separate entries when notes differ.
-        // We need to preserve ALL note variants, not collapse them by name.
+        // Each unique name+notes combination is a separate item.
+        // Compare GPT's full extracted list against what's already confirmed.
+        // Only add items that aren't already there (by exact name+notes match).
         
-        // Tally what's already confirmed (by name only for qty tracking)
-        const confirmedCounts = {};
-        for (const item of existingItems) {
-          const key = item.name.toLowerCase();
-          confirmedCounts[key] = (confirmedCounts[key] || 0) + (item.quantity || 1);
-        }
-
-        // Tally total qty GPT extracted per item name
-        const extractedTotalQty = {};
-        for (const item of orderItems) {
-          const key = item.name.toLowerCase();
-          extractedTotalQty[key] = (extractedTotalQty[key] || 0) + (item.quantity || 1);
-        }
-
-        // For each unique item name, figure out how many NEW ones to add
-        const processedNames = new Set();
-        for (const item of orderItems) {
-          const key = item.name.toLowerCase();
-          if (processedNames.has(key)) continue;
-          processedNames.add(key);
-
-          const alreadyHave = confirmedCounts[key] || 0;
-          const totalExtracted = extractedTotalQty[key] || 0;
-          const toAdd = totalExtracted - alreadyHave;
-
+        for (const newItem of orderItems) {
+          const exactKey = (newItem.name + '|' + (newItem.notes || '')).toLowerCase();
+          const nameKey = newItem.name.toLowerCase();
+          
+          // Check if this exact variant (name+notes) already exists in confirmed order
+          const exactMatch = existingItems.findIndex(e =>
+            (e.name + '|' + (e.notes || '')).toLowerCase() === exactKey
+          );
+          
+          if (exactMatch >= 0) {
+            // Already exists — don't add again, just ensure qty is right
+            // (don't increase qty here — customer didn't order more)
+            continue;
+          }
+          
+          // Check total qty of this name across all variants in confirmed order
+          const confirmedQtyForName = existingItems
+            .filter(e => e.name.toLowerCase() === nameKey)
+            .reduce((s, e) => s + (e.quantity || 1), 0);
+          
+          // Check total qty of this name across all variants GPT extracted
+          const extractedQtyForName = orderItems
+            .filter(i => i.name.toLowerCase() === nameKey)
+            .reduce((s, i) => s + (i.quantity || 1), 0);
+          
+          const toAdd = extractedQtyForName - confirmedQtyForName;
+          
           if (toAdd > 0) {
-            // Need to add new items — find the extracted ones with notes
-            const extractedWithThisName = orderItems.filter(i => i.name.toLowerCase() === key);
-            // Add each note variant as a separate entry
-            let addedSoFar = 0;
-            for (const extracted of extractedWithThisName) {
-              if (addedSoFar >= toAdd) break;
-              const qty = Math.min(extracted.quantity || 1, toAdd - addedSoFar);
-              existingItems.push({
-                name: extracted.name,
-                quantity: qty,
-                extras: [],
-                notes: extracted.notes || null,
-              });
-              addedSoFar += qty;
-            }
-          } else if (toAdd === 0) {
-            // Same qty — update notes on existing items if GPT extracted notes
-            const extractedWithNotes = orderItems.filter(i => i.name.toLowerCase() === key && i.notes);
-            for (const extracted of extractedWithNotes) {
-              const idx = existingItems.findIndex(e => e.name.toLowerCase() === key && !e.notes);
-              if (idx >= 0) existingItems[idx].notes = extracted.notes;
+            // This is a genuinely new item/variant — add it
+            existingItems.push({
+              name: newItem.name,
+              quantity: Math.min(newItem.quantity || 1, toAdd),
+              extras: [],
+              notes: newItem.notes || null,
+            });
+          } else if (toAdd <= 0 && newItem.notes) {
+            // Same total qty but this note variant doesn't exist — apply note to existing no-note entry
+            const noNoteIdx = existingItems.findIndex(e =>
+              e.name.toLowerCase() === nameKey && !e.notes
+            );
+            if (noNoteIdx >= 0) {
+              existingItems[noNoteIdx].notes = newItem.notes;
             }
           }
         }
