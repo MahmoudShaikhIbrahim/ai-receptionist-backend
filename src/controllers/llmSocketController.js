@@ -492,17 +492,22 @@ STRICT RULES:
     - "بدون ثوم" → "no garlic"
   * If customer says "واحد سبايسي وواحد عادي" → extract as TWO separate items: first with notes="spicy", second with notes=null
   * Multiple notes per item ARE allowed — combine them with comma
-  * SHARED notes: if customer says "both/all/كلهم/كلهن/الاثنين" before a note, it applies to ALL items:
-    - "both without vegetables, one spicy" → item 1: "no vegetables, spicy" | item 2: "no vegetables"
-    - "كلهم بدون خضار وواحد منهم حار" → item 1: "no vegetables, spicy" | item 2: "no vegetables"
-    - "الاثنين بدون بصل وواحد منهم اكسترا صوص" → item 1: "no onions, extra sauce" | item 2: "no onions"
-  * INDIVIDUAL notes: if customer says "one X and one Y" with no shared note:
-    - "واحد سبايسي وواحد بدون خضار" → item 1: "spicy" | item 2: "no vegetables"
-  * When notes come in a SEPARATE turn after items were already collected:
-    - Look at what's in the current order state and apply notes to matching items
-    - "وواحدة منهم تكون سبايسي" after "2 zingers both no vegetables" → item 1: "no vegetables, spicy" | item 2: "no vegetables"
-  * ALL notes must be in English in the JSON — translate Arabic notes to English
-  * NEVER lose any note the customer mentioned
+  * Extract ANY customization the customer says — don't limit to a predefined list.
+    Whatever the customer requests for an item, extract it as a short keyword in English.
+    
+  * COMBINING SHARED + INDIVIDUAL NOTES (the most important rule):
+    If customer applies a note to ALL items ("both/كلهم/الاثنين") AND also says individual notes,
+    COMBINE them — the shared note + the individual note both go on the same item.
+    
+    The logic: shared_note + individual_note = final_note for that item.
+    
+    Wrong approach: shared note goes on some items, individual note overwrites it.
+    Right approach: shared note + individual note are BOTH preserved on each item.
+    
+  * Keep notes SHORT — extract only the actual instruction, strip polite words and filler.
+  * Translate any Arabic note to English before saving.
+  * NEVER drop a note the customer mentioned — if they said it, it must be in the JSON.
+  * Multiple notes on one item → comma separated: "no vegetables, spicy"
   * These go in the item's "notes" field — update the relevant item even if mentioned earlier
   * NEVER ignore real customization requests
 - For address corrections (CRITICAL):
