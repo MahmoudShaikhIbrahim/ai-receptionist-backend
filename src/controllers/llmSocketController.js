@@ -1514,43 +1514,22 @@ async function _processMessage(body, req, callId) {
       const validItems = normalizedItems.filter(item =>
         item?.name && !!findMenuItem(agent.menu?.filter(m => m.available), item.name)
       );
-      // REPLACE strategy: GPT sees full transcript so its extraction is authoritative
-      // SAFE MERGE: GPT may run multiple times on same transcript
-      // Each unique item variant (name+notes) should appear ONCE
-      // Total quantity per name across all variants should not exceed what GPT extracted
+      // GPT sees the FULL transcript — its extraction IS the ground truth.
+      // Simply replace orderDraft.items with what GPT extracted (deduplicated by name+notes).
+      // This avoids all accumulation bugs from sequential requests.
       
-      // Build what GPT wants as the final state
-      const gptWants = {}; // key: name+notes -> {name, notes, qty}
-      for (const item of validItems) {
-        const key = (item.name + '|' + (item.notes || '')).toLowerCase();
-        if (gptWants[key]) {
-          gptWants[key].qty += (item.quantity || 1);
-        } else {
-          gptWants[key] = { name: item.name, notes: item.notes || null, qty: item.quantity || 1 };
-        }
-      }
-      
-      // Apply GPT's desired state to orderDraft
-      for (const [key, wanted] of Object.entries(gptWants)) {
-        const existingIdx = orderDraft.items.findIndex(e =>
-          (e.name + '|' + (e.notes || '')).toLowerCase() === key
-        );
-        if (existingIdx >= 0) {
-          // Already have this exact variant — just update qty
-          orderDraft.items[existingIdx].quantity = wanted.qty;
-        } else {
-          // Check if there's a no-note version we can apply the note to
-          const noNoteIdx = orderDraft.items.findIndex(e =>
-            e.name.toLowerCase() === wanted.name.toLowerCase() && !e.notes && wanted.notes
-          );
-          if (noNoteIdx >= 0) {
-            orderDraft.items[noNoteIdx].notes = wanted.notes;
-            orderDraft.items[noNoteIdx].quantity = wanted.qty;
+      if (validItems.length > 0) {
+        // Deduplicate: collapse same name+notes into one entry, summing quantities
+        const deduped = {};
+        for (const item of validItems) {
+          const key = (item.name + '|' + (item.notes || '')).toLowerCase();
+          if (deduped[key]) {
+            deduped[key].quantity += (item.quantity || 1);
           } else {
-            // Genuinely new — add it
-            orderDraft.items.push({ name: wanted.name, quantity: wanted.qty, extras: [], notes: wanted.notes });
+            deduped[key] = { ...item, quantity: item.quantity || 1 };
           }
         }
+        orderDraft.items = Object.values(deduped);
       }
     }
 

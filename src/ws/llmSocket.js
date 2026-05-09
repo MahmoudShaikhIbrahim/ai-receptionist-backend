@@ -202,97 +202,95 @@ function handleLLMWebSocket(ws, req) {
         return;
       }
 
-      // DEDUP STRATEGY:
-      // Retell sends partials as transcription builds: "بدي" -> "بدي 2" -> "بدي 2 زنجر ساندويش"
-      // We want to process ONLY the final longest version.
+      // DEDUP + SERIALIZATION STRATEGY:
+      // Retell sends multiple response_required events as transcription builds up.
+      // We must process only ONE at a time, and skip older/duplicate ones.
       const now = Date.now();
 
-      // Skip exact duplicates
+      // Quick pre-check: skip exact duplicates before even waiting
       if (latestUserText && latestUserText === lastProcessedText && now - lastProcessedTextTime < 5000) {
         console.log(`Exact duplicate: "${latestUserText.slice(0,40)}"`);
         processedResponseIds.add(responseId);
         return;
       }
 
-      // Skip ONLY if this text is a true prefix of what was already processed
-      // i.e. lastProcessedText STARTS WITH this text (it's an older partial build-up)
-      // Do NOT skip if it's a completely different sentence
-      const isOlderPartial = latestUserText && lastProcessedText &&
-          lastProcessedText.length > latestUserText.length + 3 &&
-          lastProcessedText.startsWith(latestUserText.trim()) &&
-          now - lastProcessedTextTime < 3000;
-      if (isOlderPartial) {
-        console.log(`Older partial (prefix): "${latestUserText.slice(0,30)}"`);
-        processedResponseIds.add(responseId);
-        return;
-      }
-
-      // Wait for transcript to stabilize
+      // Wait for transcript to stabilize (Retell builds it incrementally)
       const looksIncomplete = !latestUserText || latestUserText.trim().length < 10 ||
-        /(بدي|و|آه|اه|أنا|في|من|على|كمان)$/.test(latestUserText.trim());
-      await new Promise(r => setTimeout(r, looksIncomplete ? 700 : 350));
+        /(بدي|و|آه|اه|أنا|في|من|على|كمان|،)$/.test(latestUserText.trim());
+      await new Promise(r => setTimeout(r, looksIncomplete ? 800 : 400));
 
-      // After wait - if already processed skip
+      // After wait - if already processed by another request, skip
       if (processedResponseIds.has(responseId)) return;
 
-      // Update tracking
-      if (latestUserText) {
-        lastProcessedText = latestUserText;
-        lastProcessedTextTime = now;
-      }
-
-      // Acquire mutex
+      // ACQUIRE MUTEX — only one request runs at a time from this point
       await acquireCallMutex();
 
-      // Final stale check after mutex — only skip true prefixes
-      const staleAfterMutex = latestUserText && lastProcessedText &&
-          lastProcessedText.length > latestUserText.length + 5 &&
-          lastProcessedText.startsWith(latestUserText.trim()) &&
-          now - lastProcessedTextTime < 2000;
-      if (staleAfterMutex) {
-        console.log(`Stale after mutex: "${latestUserText.slice(0,30)}"`);
+      try {
+        // Inside mutex: do final dedup checks now that we have exclusive access
+        
+        // Skip if exact same text was processed while we were waiting
+        if (latestUserText && latestUserText === lastProcessedText && now - lastProcessedTextTime < 5000) {
+          console.log(`Duplicate after mutex: "${latestUserText.slice(0,40)}"`);
+          processedResponseIds.add(responseId);
+          return;
+        }
+
+        // Skip if this is an older partial of what was just processed
+        const isStale = latestUserText && lastProcessedText &&
+            lastProcessedText.length > latestUserText.length + 3 &&
+            lastProcessedText.startsWith(latestUserText.trim()) &&
+            (Date.now() - lastProcessedTextTime) < 3000;
+        if (isStale) {
+          console.log(`Stale partial: "${latestUserText.slice(0,30)}"`);
+          processedResponseIds.add(responseId);
+          return;
+        }
+
+        // Update tracking INSIDE mutex so it's serialized
+        if (latestUserText) {
+          lastProcessedText = latestUserText;
+          lastProcessedTextTime = Date.now();
+        }
+
+        // Mark as in-flight
+        inFlightResponseIds.add(responseId);
+        console.log("🗣 User:", latestUserText || "(none)");
+
+        const result = await processLLMMessage(
+          { ...data, latest_user_text: latestUserText },
+          req
+        );
+
+        // Mark as done
+        inFlightResponseIds.delete(responseId);
         processedResponseIds.add(responseId);
+
+        if (!result?.response) return;
+
+        const responseText  = result.response.trim();
+        const shouldEndCall = result?.end_call === true;
+
+        // Save last response for potential re-sends
+        lastResponseText = responseText;
+        lastResponseId   = responseId;
+
+        console.log("📤 Response:", responseText);
+
+        safeSend(ws, {
+          response_id: responseId,
+          content: responseText,
+          content_complete: true,
+          end_call: shouldEndCall,
+        });
+
+      } finally {
+        // Always release mutex whether success or error
         releaseCallMutex();
-        return;
       }
-
-            // Mark as in-flight
-      inFlightResponseIds.add(responseId);
-      console.log("🗣 User:", latestUserText || "(none)");
-
-      const result = await processLLMMessage(
-        { ...data, latest_user_text: latestUserText },
-        req
-      );
-
-      // Mark as done and release mutex
-      inFlightResponseIds.delete(responseId);
-      processedResponseIds.add(responseId);
-      releaseCallMutex();
-
-      if (!result?.response) return;
-
-      const responseText  = result.response.trim();
-      const shouldEndCall = result?.end_call === true;
-
-      // Save last response for potential re-sends
-      lastResponseText = responseText;
-      lastResponseId   = responseId;
-
-      console.log("📤 Response:", responseText);
-
-      safeSend(ws, {
-        response_id: responseId,
-        content: responseText,
-        content_complete: true,
-        end_call: shouldEndCall,
-      });
 
     } catch (err) {
       console.error("❌ Error:", err.message || err);
-      const responseId = data?.response_id ?? 0;
       inFlightResponseIds.delete(responseId);
-      releaseCallMutex();
       safeSend(ws, {
         response_id: responseId,
         content: "Sorry, something went wrong. Could you repeat that?",
