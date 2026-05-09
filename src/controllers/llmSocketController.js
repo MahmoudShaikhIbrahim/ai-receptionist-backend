@@ -517,19 +517,25 @@ STRICT RULES:
   * Extract ANY customization the customer says — don't limit to a predefined list.
     Whatever the customer requests for an item, extract it as a short keyword in English.
     
-  * COMBINING SHARED + INDIVIDUAL NOTES (the most important rule):
-    If customer applies a note to ALL items ("both/كلهم/الاثنين") AND also says individual notes,
-    COMBINE them — the shared note + the individual note both go on the same item.
+  * COMBINING SHARED + INDIVIDUAL NOTES — the most critical rule:
+    Step 1: Identify SHARED notes (apply to ALL items of that type)
+    Step 2: Identify INDIVIDUAL notes (apply to specific items only)
+    Step 3: Each item's final notes = shared notes + its individual note, combined with comma
     
-    The logic: shared_note + individual_note = final_note for that item.
+    Example: "الاثنين بدون خضار وزيادة جبن، واحدة سبايسي والثانية دبس رمان"
+    → Shared notes for both Zingers: "no vegetables, extra cheese"
+    → Item 1 individual: "spicy"  → Final: "no vegetables, extra cheese, spicy"
+    → Item 2 individual: "pomegranate molasses"  → Final: "no vegetables, extra cheese, pomegranate molasses"
     
-    Wrong approach: shared note goes on some items, individual note overwrites it.
-    Right approach: shared note + individual note are BOTH preserved on each item.
+    CRITICAL: "واحدة سبايسي" means ONE OF THEM IS SPICY — do NOT write "no spicy" for the other one.
+    If a note is not mentioned for an item, simply don't include it — don't write "no X" unless customer explicitly said "بدون X".
     
-  * Keep notes SHORT — extract only the actual instruction, strip polite words and filler.
-  * Translate any Arabic note to English before saving.
-  * NEVER drop a note the customer mentioned — if they said it, it must be in the JSON.
-  * Multiple notes on one item → comma separated: "no vegetables, spicy"
+  * Extract EXACTLY what the customer said — if they said "سبايسي" write "spicy", never "no spicy"
+  * Only write "no X" when customer explicitly says "بدون X" or "without X"
+  * Keep notes SHORT — strip filler words, keep only the instruction
+  * Translate Arabic notes to English: بدون خضار=no vegetables, حار/سبايسي=spicy, زيادة جبن=extra cheese, دبس رمان=pomegranate molasses, طحينية=tahini, زيادة صوص=extra sauce, بدون بصل=no onions
+  * NEVER drop a note — if customer said it, it MUST appear in the JSON
+  * Multiple notes on one item → comma separated: "no vegetables, extra cheese, spicy"
   * These go in the item's "notes" field — update the relevant item even if mentioned earlier
   * NEVER ignore real customization requests
 - For address corrections (CRITICAL):
@@ -1905,13 +1911,8 @@ async function _processMessage(body, req, callId) {
     }
 
     // ── FALLBACK HINTS ────────────────────────────────────
-    if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress) {
-      // Don't ask if the message we just processed already had address content
-      const hasAddressContent = /\d+|الميدان|الخان|بناية|building|tower|street/i.test(latestUserText) && latestUserText.length > 8;
-      if (!hasAddressContent) {
-        return { response: t("askDeliveryAddress", lang) };
-      }
-    }
+    if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && !orderDraft.deliveryAddress)
+      return { response: t("askDeliveryAddress", lang) };
     // If address exists but has no unit number (no digits found), ask for it ONCE
     // But only if the customer didn't just mention a number in this turn
     if (orderDraft.orderType === "delivery" && orderDraft.items?.length > 0 && orderDraft.deliveryAddress) {
