@@ -1178,7 +1178,8 @@ async function _processMessage(body, req, callId) {
       return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }
     // "لا" or "no" alone after confirmed order = goodbye
-    const isSimpleNo = /^(لا|no|nope|لأ|بس|bas|that's it|done|هيك|هيك بس|بس هيك|يلا|خلص|تمام بس)[\s\.\!\?،]*$/i.test(latestUserText.trim());
+    const isSimpleNo = /^(لا|no|nope|لأ|بس|bas|that's it|done|هيك|هيك بس|بس هيك|يلا|خلص|خلاص|تمام بس|إن شاء الله|انشالله|ان شاء الله|okay|ok)[\s\.\!\?،]*$/i.test(latestUserText.trim()) ||
+      /^(خلاص|طيب خلاص|خلاص هذا|طيب)[\s\.,،!؟]*$/i.test(latestUserText.trim());
     if (isSimpleNo) {
       return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }

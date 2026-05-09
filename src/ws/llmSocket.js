@@ -217,7 +217,7 @@ function handleLLMWebSocket(ws, req) {
       // Wait for transcript to stabilize (Retell builds it incrementally)
       const looksIncomplete = !latestUserText || latestUserText.trim().length < 10 ||
         /(بدي|و|آه|اه|أنا|في|من|على|كمان|،)$/.test(latestUserText.trim());
-      await new Promise(r => setTimeout(r, looksIncomplete ? 800 : 400));
+      await new Promise(r => setTimeout(r, looksIncomplete ? 300 : 150));
 
       // After wait - if already processed by another request, skip
       if (processedResponseIds.has(responseId)) return;
@@ -235,13 +235,17 @@ function handleLLMWebSocket(ws, req) {
           return;
         }
 
-        // Skip if this is an older partial of what was just processed
-        const isStale = latestUserText && lastProcessedText &&
-            lastProcessedText.length > latestUserText.length + 3 &&
-            lastProcessedText.startsWith(latestUserText.trim()) &&
-            (Date.now() - lastProcessedTextTime) < 3000;
-        if (isStale) {
-          console.log(`Stale partial: "${latestUserText.slice(0,30)}"`);
+        // Skip if this is a continuation of the same sentence already processed
+        // Both directions: new text is LONGER (continuation) or SHORTER (older partial)
+        const timeSinceLast = Date.now() - lastProcessedTextTime;
+        const isContinuation = latestUserText && lastProcessedText && timeSinceLast < 4000 && (
+          // New text starts with what we already processed (it's a longer version of same sentence)
+          latestUserText.trim().startsWith(lastProcessedText.trim().slice(0, Math.min(15, lastProcessedText.trim().length))) ||
+          // Last processed starts with new text (new is shorter/older partial)
+          lastProcessedText.trim().startsWith(latestUserText.trim().slice(0, Math.min(15, latestUserText.trim().length)))
+        ) && Math.abs(latestUserText.length - lastProcessedText.length) > 0;
+        if (isContinuation) {
+          console.log(`Continuation of same sentence, skipping: "${latestUserText.slice(0,30)}"`);
           processedResponseIds.add(responseId);
           return;
         }
