@@ -235,17 +235,16 @@ function handleLLMWebSocket(ws, req) {
           return;
         }
 
-        // Skip if this is a continuation of the same sentence already processed
-        // Both directions: new text is LONGER (continuation) or SHORTER (older partial)
+        // Skip ONLY if this is clearly a shorter/older partial of what was just processed
+        // i.e. what we already processed STARTS WITH the new text (new text is older/shorter)
+        // Do NOT skip if new text is longer — it may have important new content
         const timeSinceLast = Date.now() - lastProcessedTextTime;
-        const isContinuation = latestUserText && lastProcessedText && timeSinceLast < 4000 && (
-          // New text starts with what we already processed (it's a longer version of same sentence)
-          latestUserText.trim().startsWith(lastProcessedText.trim().slice(0, Math.min(15, lastProcessedText.trim().length))) ||
-          // Last processed starts with new text (new is shorter/older partial)
-          lastProcessedText.trim().startsWith(latestUserText.trim().slice(0, Math.min(15, latestUserText.trim().length)))
-        ) && Math.abs(latestUserText.length - lastProcessedText.length) > 0;
-        if (isContinuation) {
-          console.log(`Continuation of same sentence, skipping: "${latestUserText.slice(0,30)}"`);
+        const isOlderPartial = latestUserText && lastProcessedText && 
+          timeSinceLast < 3000 &&
+          lastProcessedText.trim().length > latestUserText.trim().length + 5 &&
+          lastProcessedText.trim().startsWith(latestUserText.trim());
+        if (isOlderPartial) {
+          console.log(`Older partial, skipping: "${latestUserText.slice(0,30)}"`);
           processedResponseIds.add(responseId);
           return;
         }
