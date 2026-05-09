@@ -1487,42 +1487,36 @@ async function _processMessage(body, req, callId) {
         item?.name && !!findMenuItem(agent.menu?.filter(m => m.available), item.name)
       );
       // REPLACE strategy: GPT sees full transcript so its extraction is authoritative
-      // Don't append — replace matching items with GPT's version to avoid accumulation
+      // REPLACE strategy: GPT sees full transcript so its extraction is authoritative.
+      // When GPT extracts multiple variants of same item with different notes,
+      // each variant must be stored separately.
+      
+      // First: replace the entire items list with what GPT extracted,
+      // but be careful not to lose items that GPT didn't re-mention.
+      
+      // Group validItems by name+notes combination (each unique variant)
       for (const newItem of validItems) {
-        // Find by name only (ignore notes for matching)
-        const existingByName = orderDraft.items.filter(e =>
-          e.name.toLowerCase() === newItem.name.toLowerCase()
+        const exactMatch = orderDraft.items.findIndex(e =>
+          e.name.toLowerCase() === newItem.name.toLowerCase() &&
+          (e.notes || null) === (newItem.notes || null)
         );
         
-        if (existingByName.length === 0) {
-          // Truly new item — add it
-          orderDraft.items.push(newItem);
+        if (exactMatch >= 0) {
+          // Same item, same note — update quantity
+          orderDraft.items[exactMatch].quantity = newItem.quantity || 1;
         } else {
-          // Item exists — check if this is a new note variant or an update
-          const exactMatch = orderDraft.items.findIndex(e =>
-            e.name.toLowerCase() === newItem.name.toLowerCase() && 
-            (e.notes || null) === (newItem.notes || null)
+          // Check if this is a genuinely new variant or just a note update
+          const sameNameNoNote = orderDraft.items.findIndex(e =>
+            e.name.toLowerCase() === newItem.name.toLowerCase() && !e.notes
           );
-          if (exactMatch >= 0) {
-            // Same item, same note — just update quantity
-            orderDraft.items[exactMatch].quantity = newItem.quantity || 1;
+          
+          if (sameNameNoNote >= 0 && newItem.notes) {
+            // Apply note to the no-note entry of same item
+            orderDraft.items[sameNameNoNote].notes = newItem.notes;
+            orderDraft.items[sameNameNoNote].quantity = newItem.quantity || 1;
           } else {
-            // Same item, different note — this is a variant, add separately
-            // BUT only if total count of this item doesn't exceed what was ordered
-            const totalExisting = existingByName.reduce((s, i) => s + (i.quantity || 1), 0);
-            const totalNew = validItems.filter(i => i.name.toLowerCase() === newItem.name.toLowerCase())
-              .reduce((s, i) => s + (i.quantity || 1), 0);
-            if (totalExisting < totalNew) {
-              orderDraft.items.push(newItem);
-            } else {
-              // Apply note to first matching item without a note
-              const noNoteIdx = orderDraft.items.findIndex(e =>
-                e.name.toLowerCase() === newItem.name.toLowerCase() && !e.notes
-              );
-              if (noNoteIdx >= 0 && newItem.notes) {
-                orderDraft.items[noNoteIdx].notes = newItem.notes;
-              }
-            }
+            // Genuinely new variant — add it
+            orderDraft.items.push(newItem);
           }
         }
       }
@@ -1777,46 +1771,59 @@ async function _processMessage(body, req, callId) {
       });
 
       if (existingOrder) {
-        // Smart merge: start with existing items as base
-        // New orderItems from draft represent what was JUST added in this turn
-        // We need to ADD them on top of existing, not replace
         const existingItems = existingOrder.items.map(i => i.toObject ? i.toObject() : { ...i });
 
-        // GPT sees full transcript so orderItems includes BOTH existing AND new items.
-        // Only add the DIFFERENCE — what's new beyond what's already in the order.
+        // GPT extracts items with notes as separate entries when notes differ.
+        // We need to preserve ALL note variants, not collapse them by name.
         
-        // Tally what's already confirmed
+        // Tally what's already confirmed (by name only for qty tracking)
         const confirmedCounts = {};
         for (const item of existingItems) {
           const key = item.name.toLowerCase();
           confirmedCounts[key] = (confirmedCounts[key] || 0) + (item.quantity || 1);
         }
 
-        // Tally what GPT extracted from full transcript
-        const extractedCounts = {};
-        const extractedNotes = {};
+        // Tally total qty GPT extracted per item name
+        const extractedTotalQty = {};
         for (const item of orderItems) {
           const key = item.name.toLowerCase();
-          extractedCounts[key] = (extractedCounts[key] || 0) + (item.quantity || 1);
-          if (item.notes) extractedNotes[key] = item.notes;
+          extractedTotalQty[key] = (extractedTotalQty[key] || 0) + (item.quantity || 1);
         }
 
-        // Add only genuinely new items (qty difference)
-        for (const [key, totalQty] of Object.entries(extractedCounts)) {
+        // For each unique item name, figure out how many NEW ones to add
+        const processedNames = new Set();
+        for (const item of orderItems) {
+          const key = item.name.toLowerCase();
+          if (processedNames.has(key)) continue;
+          processedNames.add(key);
+
           const alreadyHave = confirmedCounts[key] || 0;
-          const toAdd = totalQty - alreadyHave;
+          const totalExtracted = extractedTotalQty[key] || 0;
+          const toAdd = totalExtracted - alreadyHave;
+
           if (toAdd > 0) {
-            const menuItem = agent.menu?.find(m => m.name.toLowerCase() === key);
-            existingItems.push({
-              name: menuItem?.name || key,
-              quantity: toAdd,
-              extras: [],
-              notes: extractedNotes[key] || null,
-            });
-          } else if (toAdd === 0 && extractedNotes[key]) {
-            // Same qty but note update — apply to existing
-            const idx = existingItems.findIndex(e => e.name.toLowerCase() === key && !e.notes);
-            if (idx >= 0) existingItems[idx].notes = extractedNotes[key];
+            // Need to add new items — find the extracted ones with notes
+            const extractedWithThisName = orderItems.filter(i => i.name.toLowerCase() === key);
+            // Add each note variant as a separate entry
+            let addedSoFar = 0;
+            for (const extracted of extractedWithThisName) {
+              if (addedSoFar >= toAdd) break;
+              const qty = Math.min(extracted.quantity || 1, toAdd - addedSoFar);
+              existingItems.push({
+                name: extracted.name,
+                quantity: qty,
+                extras: [],
+                notes: extracted.notes || null,
+              });
+              addedSoFar += qty;
+            }
+          } else if (toAdd === 0) {
+            // Same qty — update notes on existing items if GPT extracted notes
+            const extractedWithNotes = orderItems.filter(i => i.name.toLowerCase() === key && i.notes);
+            for (const extracted of extractedWithNotes) {
+              const idx = existingItems.findIndex(e => e.name.toLowerCase() === key && !e.notes);
+              if (idx >= 0) existingItems[idx].notes = extracted.notes;
+            }
           }
         }
 
