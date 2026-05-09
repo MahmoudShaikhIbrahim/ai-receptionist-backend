@@ -199,7 +199,25 @@ function translateToEnglishStorage(text) {
 
 // ─── ARABIC NAME TRANSLITERATION ──────────────────────────────────────────────
 // Converts Arabic name to English equivalent for MongoDB storage
+// Common Arabic names that need correct transliteration
+const ARABIC_NAME_MAP = {
+  'عبد الله': 'Abdullah', 'عبدالله': 'Abdullah',
+  'عبد الرحمن': 'Abdulrahman', 'عبدالرحمن': 'Abdulrahman',
+  'عبد العزيز': 'Abdulaziz', 'عبدالعزيز': 'Abdulaziz',
+  'محمد': 'Mohammed', 'محمود': 'Mahmoud',
+  'أحمد': 'Ahmad', 'احمد': 'Ahmad',
+  'خالد': 'Khalid', 'فيصل': 'Faisal',
+  'سلمى': 'Salma', 'سارة': 'Sara', 'فاطمة': 'Fatima',
+  'يوسف': 'Yousef', 'عمر': 'Omar', 'علي': 'Ali',
+  'نور': 'Nour', 'ريم': 'Reem', 'هند': 'Hind',
+  'مريم': 'Mariam', 'لينا': 'Lina', 'دانة': 'Dana',
+};
+
 async function transliterateToEnglish(arabicText) {
+  if (!arabicText) return arabicText;
+  // Check common names first before calling GPT
+  const trimmed = arabicText.trim();
+  if (ARABIC_NAME_MAP[trimmed]) return ARABIC_NAME_MAP[trimmed];
   if (!arabicText || !containsArabic(arabicText)) return arabicText;
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -463,6 +481,10 @@ STRICT RULES:
     - JVC, JBR, Marina, Downtown, Deira, Bur Dubai, Jumeirah, مردف → DUBAI
     - النهدة دبي → DUBAI
     - عجمان / Ajman → AJMAN
+    - الأهرامات / Al Ahramat / Al Ahramat Building → AJMAN (this is in Ajman, NOT Sharjah)
+    - النعيمية / Al Nuaimiya → AJMAN
+    - الروضة / Al Rawda → AJMAN (Ajman)
+    - مويهات / Muwaileh → SHARJAH
     - رأس الخيمة / RAK → RAS AL KHAIMAH
     - العين / Al Ain → ABU DHABI
   * ALWAYS infer city from area — never default to Dubai if area suggests another city
@@ -1487,36 +1509,40 @@ async function _processMessage(body, req, callId) {
         item?.name && !!findMenuItem(agent.menu?.filter(m => m.available), item.name)
       );
       // REPLACE strategy: GPT sees full transcript so its extraction is authoritative
-      // REPLACE strategy: GPT sees full transcript so its extraction is authoritative.
-      // When GPT extracts multiple variants of same item with different notes,
-      // each variant must be stored separately.
+      // SAFE MERGE: GPT may run multiple times on same transcript
+      // Each unique item variant (name+notes) should appear ONCE
+      // Total quantity per name across all variants should not exceed what GPT extracted
       
-      // First: replace the entire items list with what GPT extracted,
-      // but be careful not to lose items that GPT didn't re-mention.
-      
-      // Group validItems by name+notes combination (each unique variant)
-      for (const newItem of validItems) {
-        const exactMatch = orderDraft.items.findIndex(e =>
-          e.name.toLowerCase() === newItem.name.toLowerCase() &&
-          (e.notes || null) === (newItem.notes || null)
-        );
-        
-        if (exactMatch >= 0) {
-          // Same item, same note — update quantity
-          orderDraft.items[exactMatch].quantity = newItem.quantity || 1;
+      // Build what GPT wants as the final state
+      const gptWants = {}; // key: name+notes -> {name, notes, qty}
+      for (const item of validItems) {
+        const key = (item.name + '|' + (item.notes || '')).toLowerCase();
+        if (gptWants[key]) {
+          gptWants[key].qty += (item.quantity || 1);
         } else {
-          // Check if this is a genuinely new variant or just a note update
-          const sameNameNoNote = orderDraft.items.findIndex(e =>
-            e.name.toLowerCase() === newItem.name.toLowerCase() && !e.notes
+          gptWants[key] = { name: item.name, notes: item.notes || null, qty: item.quantity || 1 };
+        }
+      }
+      
+      // Apply GPT's desired state to orderDraft
+      for (const [key, wanted] of Object.entries(gptWants)) {
+        const existingIdx = orderDraft.items.findIndex(e =>
+          (e.name + '|' + (e.notes || '')).toLowerCase() === key
+        );
+        if (existingIdx >= 0) {
+          // Already have this exact variant — just update qty
+          orderDraft.items[existingIdx].quantity = wanted.qty;
+        } else {
+          // Check if there's a no-note version we can apply the note to
+          const noNoteIdx = orderDraft.items.findIndex(e =>
+            e.name.toLowerCase() === wanted.name.toLowerCase() && !e.notes && wanted.notes
           );
-          
-          if (sameNameNoNote >= 0 && newItem.notes) {
-            // Apply note to the no-note entry of same item
-            orderDraft.items[sameNameNoNote].notes = newItem.notes;
-            orderDraft.items[sameNameNoNote].quantity = newItem.quantity || 1;
+          if (noNoteIdx >= 0) {
+            orderDraft.items[noNoteIdx].notes = wanted.notes;
+            orderDraft.items[noNoteIdx].quantity = wanted.qty;
           } else {
-            // Genuinely new variant — add it
-            orderDraft.items.push(newItem);
+            // Genuinely new — add it
+            orderDraft.items.push({ name: wanted.name, quantity: wanted.qty, extras: [], notes: wanted.notes });
           }
         }
       }
