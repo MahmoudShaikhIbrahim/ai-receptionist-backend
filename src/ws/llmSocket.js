@@ -58,6 +58,9 @@ function handleLLMWebSocket(ws, req) {
   // Dedup by user text — if same text is sent twice quickly, only process once
   let lastProcessedText = null;
   let lastProcessedTextTime = 0;
+  // Track highest response_id seen — Retell only plays the latest one
+  // Any response with a lower id will be discarded by Retell anyway
+  let highestResponseId = 0;
   // Per-call mutex — only ONE request processes at a time
   // Queue of pending requests waiting for the mutex
   let mutexLocked = false;
@@ -207,6 +210,9 @@ function handleLLMWebSocket(ws, req) {
       // We must process only ONE at a time, and skip older/duplicate ones.
       const now = Date.now();
 
+      // Track highest response_id
+      if (responseId > highestResponseId) highestResponseId = responseId;
+
       // Quick pre-check: skip exact duplicates before even waiting
       if (latestUserText && latestUserText === lastProcessedText && now - lastProcessedTextTime < 5000) {
         console.log(`Exact duplicate: "${latestUserText.slice(0,40)}"`);
@@ -245,6 +251,14 @@ function handleLLMWebSocket(ws, req) {
           lastProcessedText.trim().startsWith(latestUserText.trim());
         if (isOlderPartial) {
           console.log(`Older partial, skipping: "${latestUserText.slice(0,30)}"`);
+          processedResponseIds.add(responseId);
+          return;
+        }
+
+        // Skip if a newer response_id has come in while we were waiting
+        // Retell would discard our response anyway since it only plays the latest
+        if (responseId < highestResponseId) {
+          console.log(`Skipping stale response_id ${responseId} (latest is ${highestResponseId})`);
           processedResponseIds.add(responseId);
           return;
         }
