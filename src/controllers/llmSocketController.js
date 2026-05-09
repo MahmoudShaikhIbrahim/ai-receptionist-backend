@@ -1380,6 +1380,25 @@ async function _processMessage(body, req, callId) {
         }
       }
 
+      // Customer wants to hear their order repeated back
+      const wantsRepeat = /تعيد|كرر|عيدلي|قولي طلبي|شو طلبت|repeat|read.*order|order.*again|ممكن تعيد|اعد.*الطلب|الأوردر.*كامل/i.test(latestUserText);
+      if (wantsRepeat && existingOrder) {
+        const itemsList = existingOrder.items.map(item => {
+          const notesStr = item.notes ? ` (${item.notes})` : '';
+          if (lang === 'ar') {
+            const qty = item.quantity > 1 ? ` ${item.quantity}` : '';
+            return `${item.name}${qty}${notesStr}`;
+          }
+          return `${item.quantity > 1 ? item.quantity + 'x ' : ''}${item.name}${notesStr}`;
+        }).join(lang === 'ar' ? ' و' : ', ');
+        const addr = existingOrder.deliveryAddress || '';
+        const name = existingOrder.customerName || draft.customerName || '';
+        if (lang === 'ar') {
+          return { response: `تفضل، طلبك: ${itemsList}. التوصيل على ${addr}، باسم ${name}. المجموع ${existingOrder.total} درهم. في شي بدك تغير؟` };
+        }
+        return { response: `Here's your order: ${itemsList}. Delivery to ${addr}, name ${name}. Total ${existingOrder.total} AED. Any changes?` };
+      }
+
       // Customer wants to add more to their order
       const wantsToAdd = /بقدر أضيف|ممكن أضيف|أبي أضيف|بدي أضيف|can i add|i want to add|add another|أضيف كمان|بدي كمان|بدي أطلب كمان/i.test(latestUserText);
       if (wantsToAdd) {
@@ -1416,8 +1435,10 @@ async function _processMessage(body, req, callId) {
   // FAST PATH: trivial responses skip GPT entirely
   // Greetings and small fillers when no order/booking active
   const trivialInput = latestUserText?.trim();
+  // Fast-path ONLY for pure greetings — never when order content is detected
+  const hasOrderContent = /زنجر|شاورما|عصير|ساندويش|بدي|أطلب|طلب|order|sandwich|juice/i.test(trivialInput || '');
   if (!bookingFlowActive && !orderFlowActive && !cancelIntent && !modifyIntent &&
-      orderDraft.items.length === 0 && !draft.partySize) {
+      orderDraft.items.length === 0 && !draft.partySize && !hasOrderContent) {
     // Strip punctuation for matching
     const stripped = (trivialInput || '').replace(/[،,\.\!\?\s]+/g, ' ').trim();
     if (/^(الو|ألو|hello|hi|hey|مرحبا|أهلا|اهلا|هلا|هلو|السلام عليكم|وعليكم السلام)$/i.test(stripped)) {
