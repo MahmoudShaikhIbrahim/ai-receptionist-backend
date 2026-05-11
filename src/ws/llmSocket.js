@@ -61,6 +61,8 @@ function handleLLMWebSocket(ws, req) {
   // Track highest response_id seen — Retell only plays the latest one
   // Any response with a lower id will be discarded by Retell anyway
   let highestResponseId = 0;
+  // Once end_call is sent, reject all further processing for this call
+  let callEnded = false;
   // Per-call mutex — only ONE request processes at a time
   // Queue of pending requests waiting for the mutex
   let mutexLocked = false;
@@ -210,6 +212,12 @@ function handleLLMWebSocket(ws, req) {
       // We must process only ONE at a time, and skip older/duplicate ones.
       const now = Date.now();
 
+      // If call already ended, reject all further processing
+      if (callEnded) {
+        processedResponseIds.add(responseId);
+        return;
+      }
+
       // Track highest response_id
       if (responseId > highestResponseId) highestResponseId = responseId;
 
@@ -292,6 +300,8 @@ function handleLLMWebSocket(ws, req) {
         lastResponseId   = responseId;
 
         console.log("📤 Response:", responseText);
+
+        if (shouldEndCall) callEnded = true;
 
         safeSend(ws, {
           response_id: responseId,
