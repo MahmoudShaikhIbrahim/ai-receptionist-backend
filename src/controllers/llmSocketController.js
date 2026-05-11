@@ -616,9 +616,21 @@ Respond ONLY with valid JSON (no markdown):
       }),
     });
     const data = await response.json();
-    const raw   = data.choices?.[0]?.message?.content?.trim() ?? "{}";
-    const clean = raw.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
+    let raw = data.choices?.[0]?.message?.content?.trim() ?? "{}";
+    // Groq sometimes wraps in markdown code blocks — strip them
+    raw = raw.replace(/^```jsons*/i, "").replace(/s*```$/, "").trim();
+    // Sometimes starts with text before the JSON — find the first {
+    const jsonStart = raw.indexOf("{");
+    const jsonEnd   = raw.lastIndexOf("}");
+    if (jsonStart > 0 && jsonEnd > jsonStart) raw = raw.slice(jsonStart, jsonEnd + 1);
+    if (!raw || raw === "") raw = "{}";
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (parseErr) {
+      console.error("❌ JSON parse error, raw was:", raw.slice(0, 200));
+      parsed = {};
+    }
     console.log("🎯 Extraction:", parsed);
     return {
       extracted:      parsed.extracted      ?? {},
