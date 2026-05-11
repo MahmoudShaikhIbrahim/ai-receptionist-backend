@@ -1,3 +1,9 @@
+// Toggle: set GROQ_API_KEY + USE_GROQ=true in Railway env to use Groq (faster)
+const USE_GROQ = process.env.USE_GROQ === "true" && !!process.env.GROQ_API_KEY;
+const GROQ_MODEL = "llama-3.3-70b-versatile";
+if (USE_GROQ) console.log("⚡ Using Groq for extraction (fast mode)");
+else console.log("🤖 Using OpenAI gpt-4o-mini for extraction");
+
 // src/controllers/llmSocketController.js
 
 const Agent   = require("../models/Agent");
@@ -586,17 +592,27 @@ Respond ONLY with valid JSON (no markdown):
 }`;
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const extractionUrl = USE_GROQ
+      ? "https://api.groq.com/openai/v1/chat/completions"
+      : "https://api.openai.com/v1/chat/completions";
+    const extractionKey = USE_GROQ ? process.env.GROQ_API_KEY : process.env.OPENAI_API_KEY;
+    const extractionModel = USE_GROQ ? GROQ_MODEL : "gpt-4o-mini";
+    const extractionPromptFinal = USE_GROQ
+      ? prompt + "\n\nReturn ONLY raw JSON. No markdown. No backticks. No explanation."
+      : prompt;
+
+    const response = await fetch(extractionUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Authorization": `Bearer ${extractionKey}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        max_tokens: 500,
-        temperature: 0.2,
-        messages: [{ role: "user", content: prompt }],
+        model: extractionModel,
+        max_tokens: 200,
+        temperature: 0,
+        ...(USE_GROQ ? {} : { response_format: { type: "json_object" } }),
+        messages: [{ role: "user", content: extractionPromptFinal }],
       }),
     });
     const data = await response.json();
@@ -1179,7 +1195,8 @@ async function _processMessage(body, req, callId) {
     }
     // "لا" or "no" alone after confirmed order = goodbye
     const isSimpleNo = /^(لا|no|nope|لأ|بس|bas|that's it|done|هيك|هيك بس|بس هيك|يلا|خلص|خلاص|تمام بس|إن شاء الله|انشالله|ان شاء الله|okay|ok)[\s\.\!\?،]*$/i.test(latestUserText.trim()) ||
-      /^(خلاص|طيب خلاص|خلاص هذا|طيب)[\s\.,،!؟]*$/i.test(latestUserText.trim());
+      /^(خلاص|طيب خلاص|خلاص هذا|طيب)[\s\.,،!؟]*$/i.test(latestUserText.trim()) ||
+      /^(لا بس شكراً|لا شكراً|شكراً لا|no thank|لا، شكر|شكراً، لا)[\s\.\!\?،]*$/i.test(latestUserText.trim());
     if (isSimpleNo) {
       return { response: buildGoodbye(latestUserText, lang), end_call: true };
     }
@@ -1206,7 +1223,21 @@ async function _processMessage(body, req, callId) {
         if (mins > 5) return { response: t("orderTooOldModify", lang, Math.floor(mins)) };
         const mentionsAddress = /\b(address|location|deliver|where)\b/i.test(latestUserText) ||
           /عنوان|موقع|توصيل|وين/.test(latestUserText);
-        orderDraft.items           = existingOrder.items;
+        // When loading existing order items, preserve any notes that are in the current draft
+        // (notes may have been set in memory but not yet saved to the confirmed order)
+        const draftItemsWithNotes = freshCall.orderDraft?.items || [];
+        const mergedItems = existingOrder.items.map(i => {
+          const itemObj = i.toObject ? i.toObject() : { ...i };
+          // Find matching item in draft with notes
+          const draftVersion = draftItemsWithNotes.find(d =>
+            d.name?.toLowerCase() === itemObj.name?.toLowerCase() && d.notes
+          );
+          if (draftVersion?.notes && !itemObj.notes) {
+            itemObj.notes = draftVersion.notes;
+          }
+          return itemObj;
+        });
+        orderDraft.items           = mergedItems;
         orderDraft.orderType       = existingOrder.orderType;
         orderDraft.deliveryAddress = mentionsAddress ? null : existingOrder.deliveryAddress;
         orderDraft.status          = null;
