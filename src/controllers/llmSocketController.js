@@ -616,6 +616,10 @@ Respond ONLY with valid JSON (no markdown):
       }),
     });
     const data = await response.json();
+    if (!response.ok) {
+      console.error("❌ Groq/OpenAI HTTP error:", response.status, JSON.stringify(data).slice(0, 200));
+      return { extracted: {}, orderExtracted: {}, response: null, intent: null };
+    }
     let raw = data.choices?.[0]?.message?.content?.trim() ?? "{}";
     // Groq sometimes wraps in markdown code blocks — strip them
     raw = raw.replace(/^```jsons*/i, "").replace(/s*```$/, "").trim();
@@ -629,7 +633,7 @@ Respond ONLY with valid JSON (no markdown):
       parsed = JSON.parse(raw);
     } catch (parseErr) {
       console.error("❌ JSON parse error, raw was:", raw.slice(0, 200));
-      parsed = {};
+      parsed = { _parseError: true };
     }
     console.log("🎯 Extraction:", parsed);
     return {
