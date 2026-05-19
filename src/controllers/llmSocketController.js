@@ -1,6 +1,6 @@
 // Toggle: set GROQ_API_KEY + USE_GROQ=true in Railway env to use Groq (faster)
 const USE_GROQ = process.env.USE_GROQ === "true" && !!process.env.GROQ_API_KEY;
-const GROQ_MODEL = "llama-3.3-70b-versatile";
+const GROQ_MODEL = "llama-3.1-8b-instant"; // Higher rate limits, faster, good for structured extraction
 if (USE_GROQ) console.log("⚡ Using Groq for extraction (fast mode)");
 else console.log("🤖 Using OpenAI gpt-4o-mini for extraction");
 
@@ -618,6 +618,28 @@ Respond ONLY with valid JSON (no markdown):
     const data = await response.json();
     if (!response.ok) {
       console.error("❌ Groq/OpenAI HTTP error:", response.status, JSON.stringify(data).slice(0, 200));
+      // If Groq rate limited (429), fallback to GPT-4o-mini
+      if (USE_GROQ && response.status === 429) {
+        console.log("⚠️ Groq rate limited — falling back to GPT-4o-mini");
+        const fallbackResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            max_tokens: 200,
+            temperature: 0,
+            response_format: { type: "json_object" },
+            messages: [{ role: "user", content: prompt }],
+          }),
+        });
+        const fallbackData = await fallbackResponse.json();
+        const fallbackRaw = fallbackData.choices?.[0]?.message?.content?.trim() ?? "{}";
+        try {
+          return JSON.parse(fallbackRaw);
+        } catch {
+          return { extracted: {}, orderExtracted: {}, response: null, intent: null };
+        }
+      }
       return { extracted: {}, orderExtracted: {}, response: null, intent: null };
     }
     let raw = data.choices?.[0]?.message?.content?.trim() ?? "{}";
