@@ -2,7 +2,7 @@
 const USE_GROQ = process.env.USE_GROQ === "true" && !!process.env.GROQ_API_KEY;
 const USE_CEREBRAS = process.env.USE_CEREBRAS === "true" && !!process.env.CEREBRAS_API_KEY;
 const GROQ_MODEL = "llama-3.3-70b-versatile";
-const CEREBRAS_MODEL = "llama-3.3-70b";
+const CEREBRAS_MODEL = "llama3.3-70b"; // Cerebras model name format
 if (USE_CEREBRAS) console.log("⚡ Using Cerebras for extraction (ultra-fast mode)");
 else if (USE_GROQ) console.log("⚡ Using Groq for extraction (fast mode)");
 else console.log("🤖 Using OpenAI gpt-4o-mini for extraction");
