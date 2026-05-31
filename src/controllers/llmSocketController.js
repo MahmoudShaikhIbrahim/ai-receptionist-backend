@@ -1,7 +1,10 @@
 // Toggle: set GROQ_API_KEY + USE_GROQ=true in Railway env to use Groq (faster)
 const USE_GROQ = process.env.USE_GROQ === "true" && !!process.env.GROQ_API_KEY;
-const GROQ_MODEL = "llama-3.1-8b-instant"; // Higher rate limits, faster, good for structured extraction
-if (USE_GROQ) console.log("⚡ Using Groq for extraction (fast mode)");
+const USE_CEREBRAS = process.env.USE_CEREBRAS === "true" && !!process.env.CEREBRAS_API_KEY;
+const GROQ_MODEL = "llama-3.3-70b-versatile";
+const CEREBRAS_MODEL = "llama-3.3-70b";
+if (USE_CEREBRAS) console.log("⚡ Using Cerebras for extraction (ultra-fast mode)");
+else if (USE_GROQ) console.log("⚡ Using Groq for extraction (fast mode)");
 else console.log("🤖 Using OpenAI gpt-4o-mini for extraction");
 
 // src/controllers/llmSocketController.js
@@ -592,12 +595,17 @@ Respond ONLY with valid JSON (no markdown):
 }`;
 
   try {
-    const extractionUrl = USE_GROQ
+    const extractionUrl = USE_CEREBRAS
+      ? "https://api.cerebras.ai/v1/chat/completions"
+      : USE_GROQ
       ? "https://api.groq.com/openai/v1/chat/completions"
       : "https://api.openai.com/v1/chat/completions";
-    const extractionKey = USE_GROQ ? process.env.GROQ_API_KEY : process.env.OPENAI_API_KEY;
-    const extractionModel = USE_GROQ ? GROQ_MODEL : "gpt-4o-mini";
-    const extractionPromptFinal = USE_GROQ
+    const extractionKey = USE_CEREBRAS
+      ? process.env.CEREBRAS_API_KEY
+      : USE_GROQ ? process.env.GROQ_API_KEY : process.env.OPENAI_API_KEY;
+    const extractionModel = USE_CEREBRAS ? CEREBRAS_MODEL : USE_GROQ ? GROQ_MODEL : "gpt-4o-mini";
+    const needsJsonStrip = USE_CEREBRAS || USE_GROQ;
+    const extractionPromptFinal = needsJsonStrip
       ? prompt + "\n\nReturn ONLY raw JSON. No markdown. No backticks. No explanation."
       : prompt;
 
@@ -611,7 +619,7 @@ Respond ONLY with valid JSON (no markdown):
         model: extractionModel,
         max_tokens: 200,
         temperature: 0,
-        ...(USE_GROQ ? {} : { response_format: { type: "json_object" } }),
+        ...(!USE_GROQ && !USE_CEREBRAS ? { response_format: { type: "json_object" } } : {}),
         messages: [{ role: "user", content: extractionPromptFinal }],
       }),
     });
@@ -619,8 +627,8 @@ Respond ONLY with valid JSON (no markdown):
     if (!response.ok) {
       console.error("❌ Groq/OpenAI HTTP error:", response.status, JSON.stringify(data).slice(0, 200));
       // If Groq rate limited (429), fallback to GPT-4o-mini
-      if (USE_GROQ && response.status === 429) {
-        console.log("⚠️ Groq rate limited — falling back to GPT-4o-mini");
+      if ((USE_GROQ || USE_CEREBRAS) && response.status === 429) {
+        console.log("⚠️ Rate limited — falling back to GPT-4o-mini");
         const fallbackResponse = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
@@ -1620,7 +1628,20 @@ async function _processMessage(body, req, callId) {
             deduped[key] = { ...item, quantity: item.quantity || 1 };
           }
         }
-        orderDraft.items = Object.values(deduped);
+        const newItems = Object.values(deduped);
+        
+        // PRESERVE NOTES: if existing draft has more notes than new extraction,
+        // keep the richer note version (notes should only grow, never shrink)
+        const enriched = newItems.map(newItem => {
+          const existing = orderDraft.items.find(e => 
+            e.name.toLowerCase() === newItem.name.toLowerCase()
+          );
+          if (existing?.notes && (!newItem.notes || existing.notes.length > newItem.notes.length)) {
+            return { ...newItem, notes: existing.notes };
+          }
+          return newItem;
+        });
+        orderDraft.items = enriched;
       }
     }
 
