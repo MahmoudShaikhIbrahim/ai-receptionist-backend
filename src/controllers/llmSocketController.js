@@ -609,6 +609,7 @@ Respond ONLY with valid JSON (no markdown):
       ? prompt + "\n\nReturn ONLY raw JSON. No markdown. No backticks. No explanation."
       : prompt;
 
+    const t0 = Date.now();
     const response = await fetch(extractionUrl, {
       method: "POST",
       headers: {
@@ -624,6 +625,7 @@ Respond ONLY with valid JSON (no markdown):
       }),
     });
     const data = await response.json();
+    console.log(`⏱ Extraction took ${Date.now()-t0}ms (${extractionModel})`);
     if (!response.ok) {
       console.error("❌ Groq/OpenAI HTTP error:", response.status, JSON.stringify(data).slice(0, 200));
       // If Groq rate limited (429), fallback to GPT-4o-mini
@@ -2104,6 +2106,7 @@ async function _processMessage(body, req, callId) {
     content: t.content,
   }));
 
+  const tAI = Date.now();
   const aiReply = await getAIResponse([
     { role: "system", content: systemPrompt },
     ...conversationHistory,
